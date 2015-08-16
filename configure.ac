@@ -169,6 +169,8 @@ AC_MSG_NOTICE(Using GStreamer Core Plugins in $GST_PLUGINS_DIR)
 
 AG_GST_CHECK_GST_BASE($GST_API_VERSION, [$GST_REQ], [yes])
 
+AG_GST_CHECK_GST_NET($GST_API_VERSION, [$GST_REQ], yes)
+
 AG_GST_CHECK_GST_PLUGINS_BASE($GST_API_VERSION, [$GSTPB_REQ], [yes])
 GSTPB_PLUGINS_DIR=`$PKG_CONFIG gstreamer-plugins-base-$GST_API_VERSION --variable pluginsdir`
 AC_SUBST(GSTPB_PLUGINS_DIR)
@@ -322,6 +324,7 @@ common/Makefile
 common/m4/Makefile
 gst/Makefile
 gst/rtsp-server/Makefile
+gst/rtsp-sink/Makefile
 examples/Makefile
 tests/Makefile
 tests/check/Makefile
