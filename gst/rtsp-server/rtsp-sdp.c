@@ -105,7 +105,7 @@ auth_key_length_from_auth_name (const gchar * auth)
 }
 
 static void
-make_media (GstSDPMessage * sdp, GstSDPInfo * info, GstRTSPMedia * media,
+make_media (GstSDPMessage * sdp, GstSDPInfo * info,
     GstRTSPStream * stream, GstStructure * s, GstRTSPProfile profile)
 {
   GstSDPMedia *smedia;
@@ -454,39 +454,8 @@ gst_rtsp_sdp_from_media (GstSDPMessage * sdp, GstSDPInfo * info,
   g_free (rangestr);
 
   for (i = 0; i < n_streams; i++) {
-    GstRTSPStream *stream;
-    GstCaps *caps;
-    GstStructure *s;
-    GstRTSPProfile profiles;
-    guint mask;
-
-    stream = gst_rtsp_media_get_stream (media, i);
-    caps = gst_rtsp_stream_get_caps (stream);
-
-    if (caps == NULL) {
-      g_warning ("ignoring stream %d without media type", i);
-      continue;
-    }
-
-    s = gst_caps_get_structure (caps, 0);
-    if (s == NULL) {
-      gst_caps_unref (caps);
-      g_warning ("ignoring stream %d without media type", i);
-      continue;
-    }
-
-    /* make a new media for each profile */
-    profiles = gst_rtsp_stream_get_profiles (stream);
-    mask = 1;
-    while (profiles >= mask) {
-      GstRTSPProfile prof = profiles & mask;
-
-      if (prof)
-        make_media (sdp, info, media, stream, s, prof);
-
-      mask <<= 1;
-    }
-    gst_caps_unref (caps);
+    GstRTSPStream *stream = gst_rtsp_media_get_stream (media, i);
+    gst_rtsp_sdp_from_stream (sdp, info, stream);
   }
 
   {
@@ -521,4 +490,49 @@ not_prepared:
     GST_ERROR ("media %p is not prepared", media);
     return FALSE;
   }
+}
+
+/**
+ * gst_rtsp_sdp_from_stream:
+ * @sdp: a #GstSDPMessage
+ * @info: (transfer none): a #GstSDPInfo
+ * @stream: (transfer none): a #GstRTSPStream
+ *
+ * Add info from @stream to @sdp.
+ *
+ */
+void
+gst_rtsp_sdp_from_stream (GstSDPMessage * sdp, GstSDPInfo * info,
+    GstRTSPStream * stream)
+{
+  GstCaps *caps;
+  GstStructure *s;
+  GstRTSPProfile profiles;
+  guint mask;
+
+  caps = gst_rtsp_stream_get_caps (stream);
+  if (caps == NULL) {
+    g_warning ("ignoring stream without caps");
+    return;
+  }
+
+  s = gst_caps_get_structure (caps, 0);
+  if (s == NULL) {
+    gst_caps_unref (caps);
+    g_warning ("ignoring stream without caps");
+    return;
+  }
+
+  /* make a new media for each profile */
+  profiles = gst_rtsp_stream_get_profiles (stream);
+  mask = 1;
+  while (profiles >= mask) {
+    GstRTSPProfile prof = profiles & mask;
+
+    if (prof)
+      make_media (sdp, info, stream, s, prof);
+
+    mask <<= 1;
+  }
+  gst_caps_unref (caps);
 }
