@@ -101,6 +101,7 @@ struct _GstRTSPStreamContext {
 
   /* Stream management object */
   GstRTSPStream *stream;
+  gboolean joined;
 
   /* per stream connection */
   GstRTSPConnInfo  conninfo;
@@ -109,71 +110,6 @@ struct _GstRTSPStreamContext {
 
   GstRTSPStreamTransport *stream_transport;
 };
-
-#if 0
-struct _GstRTSPStreamInfo {
-  gint          id;
-
-  GstRTSPSink   *parent; /* parent, no extra ref to parent is taken */
-
-  /* pad we expose or NULL when it does not have an actual pad */
-  GstPad       *srcpad;
-  GstFlowReturn last_ret;
-  gboolean      added;
-  gboolean      skipped;
-  gboolean      eos;
-  gboolean      discont;
-
-  /* for interleaved mode */
-  guint8        channel[2];
-  GstPad       *channelpad[2];
-
-  /* our udp sources */
-  GstElement   *udpsrc[2];
-  GstPad       *blockedpad;
-  gulong        blockid;
-  gboolean      is_ipv6;
-
-  /* our udp sinks back to the server */
-  GstElement   *udpsink[2];
-  GstPad       *rtcppad;
-
-  /* fakesrc for sending dummy data */
-  GstElement   *fakesrc;
-
-  /* state */
-  guint         port;
-  gboolean      container;
-  gboolean      is_real;
-  guint8        default_pt;
-  GstRTSPProfile profile;
-  GArray       *ptmap;
-  /* original control url */
-  gchar        *control_url;
-  guint32       ssrc;
-  guint32       seqbase;
-  guint64       timebase;
-  GstElement   *srtpdec;
-  GstCaps      *srtcpparams;
-  GstElement   *srtpenc;
-  guint32       send_ssrc;
-
-  /* session */
-  GObject      *session;
-
-  /* bandwidth */
-  guint         as_bandwidth;
-  guint         rs_bandwidth;
-  guint         rr_bandwidth;
-
-  /* destination */
-  gchar        *destination;
-  gboolean      is_multicast;
-  guint         ttl;
-
-  GstStructure     *rtx_pt_map;
-};
-#endif
 
 /**
  * GstRTSPNatMethod:
@@ -196,12 +132,7 @@ struct _GstRTSPSink {
   GstTask         *task;
   GRecMutex        stream_rec_lock;
   GstSegment       segment;
-  gboolean         running;
-  gboolean         need_range;
-  gboolean         skip;
   gint             free_channel;
-  gboolean         need_segment;
-  GstClockTime     base_time;
 
   /* UDP mode loop */
   gint             pending_cmd;
@@ -214,8 +145,6 @@ struct _GstRTSPSink {
 
   GstSDPMessage   *sdp;
   gboolean         from_sdp;
-  GstStructure    *props;
-  gboolean         need_activate;
 
   /* properties */
   GstRTSPLowerTrans protocols;
@@ -239,7 +168,6 @@ struct _GstRTSPSink {
   guint             rtp_blocksize;
   gchar            *user_id;
   gchar            *user_pw;
-  gint              buffer_mode;
   GstRTSPRange      client_port_range;
   gint              udp_buffer_size;
   gboolean          short_header;
@@ -252,7 +180,6 @@ struct _GstRTSPSink {
   GTlsCertificateFlags tls_validation_flags;
   GTlsDatabase     *tls_database;
   GTlsInteraction  *tls_interaction;
-  gboolean          do_retransmission;
   gint              ntp_time_source;
   gchar            *user_agent;
 
@@ -272,15 +199,17 @@ struct _GstRTSPSink {
   gint               methods;
 
   /* session management */
-  gulong           manager_ptmap_id;
-
   GstRTSPConnInfo  conninfo;
 
   /* Everything goes in an internal
    * locked-state bin */
   GstBin          *internal_bin;
+  /* TRUE if we posted async-start */
+  gboolean         in_async;
 
-  guint next_id;
+  guint            next_pad_id;
+  gint             next_dyn_pt;
+
   GstElement      *rtpbin;
 
   GList           *contexts;

@@ -1623,7 +1623,6 @@ find_transport (GstRTSPStream * stream, const gchar * rtcp_from)
       max = tr->client_port.max;
     }
 
-    g_print ("Checking %s %d-%d\n", tr->destination, min, max);
     if ((strcmp (tr->destination, dest) == 0) && (min == port || max == port)) {
       result = trans;
       break;
