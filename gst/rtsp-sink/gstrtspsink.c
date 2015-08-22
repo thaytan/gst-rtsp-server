@@ -802,6 +802,7 @@ gst_rtsp_sink_init (GstRTSPSink * sink)
 
   sink->internal_bin = (GstBin *) gst_bin_new ("rtspbin");
   gst_element_set_locked_state (GST_ELEMENT_CAST (sink->internal_bin), TRUE);
+  gst_bin_add (GST_BIN (sink), GST_ELEMENT_CAST (sink->internal_bin));
 
   GST_OBJECT_FLAG_SET (sink, GST_ELEMENT_FLAG_SINK);
 }
@@ -859,11 +860,6 @@ gst_rtp_payloader_filter_func (GstPluginFeature * feature, gpointer user_data)
   factory = GST_ELEMENT_FACTORY (feature);
 
   if (gst_plugin_feature_get_rank (feature) == GST_RANK_NONE)
-    return FALSE;
-
-  /* FIXME: Blacklisted rtpmp4gpay because it gets
-   * picked over rtpmp4apay */
-  if (g_str_equal ("rtpmp4gpay", gst_plugin_feature_get_name (feature)))
     return FALSE;
 
   if (!gst_element_factory_list_is_type (factory,
@@ -1127,12 +1123,15 @@ gst_rtsp_sink_setup_payloader (GstRTSPSink * sink, GstPad * pad, GstCaps * caps)
       (GstPadProbeCallback) handle_payloader_block, context, NULL);
   context->payloader = payloader;
 
-  gst_element_sync_state_with_parent (payloader);
+  payloader = gst_object_ref (payloader);
 
   gst_ghost_pad_set_target (GST_GHOST_PAD (pad), ghostsink);
   gst_object_unref (GST_OBJECT (sinkpad));
   GST_RTSP_STATE_UNLOCK (sink);
 
+  gst_element_sync_state_with_parent (payloader);
+
+  gst_object_unref (payloader);
   gst_object_unref (GST_OBJECT (srcpad));
 
   return TRUE;
@@ -1695,6 +1694,8 @@ gst_rtsp_sink_cleanup (GstRTSPSink * sink)
   GList *walk;
 
   GST_DEBUG_OBJECT (sink, "cleanup");
+
+  gst_element_set_state (GST_ELEMENT (sink->internal_bin), GST_STATE_NULL);
 
   /* Clean up any left over stream objects */
   for (walk = sink->contexts; walk; walk = g_list_next (walk)) {
@@ -4382,6 +4383,18 @@ gst_rtsp_sink_handle_message (GstBin * bin, GstMessage * message)
       GST_BIN_CLASS (parent_class)->handle_message (bin, message);
       break;
     }
+    case GST_MESSAGE_ASYNC_START:
+    case GST_MESSAGE_ASYNC_DONE:
+    {
+      GstObject *sender;
+      sender = GST_MESSAGE_SRC (message);
+
+      GST_DEBUG_OBJECT (rtsp_sink, "Ignoring ASYNC_START/DONE from %s",
+          GST_ELEMENT_NAME (sender));
+
+      gst_message_unref (message);
+      break;
+    }
     case GST_MESSAGE_ERROR:
     {
       GstObject *sender;
@@ -4464,10 +4477,9 @@ gst_rtsp_sink_start (GstRTSPSink * sink)
 {
   GST_DEBUG_OBJECT (sink, "starting");
 
-  GST_OBJECT_LOCK (sink);
-
   gst_rtsp_sink_set_state (sink, GST_STATE_READY);
 
+  GST_OBJECT_LOCK (sink);
   sink->pending_cmd = CMD_WAIT;
 
   if (sink->task == NULL) {
@@ -4548,6 +4560,8 @@ gst_rtsp_sink_change_state (GstElement * element, GstStateChange transition)
       rtsp_sink->ignore_timeout = FALSE;
       rtsp_sink->open_error = FALSE;
 
+      gst_element_set_locked_state (GST_ELEMENT (rtsp_sink->internal_bin),
+          TRUE);
       gst_rtsp_sink_set_state (rtsp_sink, GST_STATE_PAUSED);
 
       gst_rtsp_sink_loop_send_cmd (rtsp_sink, CMD_OPEN, 0);
@@ -4564,6 +4578,9 @@ gst_rtsp_sink_change_state (GstElement * element, GstStateChange transition)
       }
       break;
     case GST_STATE_CHANGE_PAUSED_TO_READY:
+      /* FIXME: Deactivate transports first? */
+      gst_element_set_locked_state (GST_ELEMENT (rtsp_sink->internal_bin),
+          FALSE);
       break;
     default:
       break;
