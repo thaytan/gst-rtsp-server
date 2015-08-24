@@ -2,7 +2,7 @@ plugin_LTLIBRARIES = libgstrtspsink.la
 
 libgstrtspsink_la_SOURCES = gstrtspsink.c plugin.c
 			
-libgstrtspsink_la_CFLAGS = $(GST_PLUGINS_BASE_CFLAGS) $(GST_CFLAGS) $(GIO_CFLAGS)
+libgstrtspsink_la_CFLAGS = -I$(top_srcdir) $(GST_PLUGINS_BASE_CFLAGS) $(GST_CFLAGS) $(GIO_CFLAGS)
 
 # FIXME: Hack to avoid having to add GETTEXT_PACKAGE to gst-rtsp
 libgstrtspsink_la_CFLAGS += -D"GETTEXT_PACKAGE=gst-rtsp-server-1.0"
