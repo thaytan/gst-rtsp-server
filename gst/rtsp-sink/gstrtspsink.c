@@ -86,8 +86,6 @@
 #include <gst/sdp/gstmikey.h>
 #include <gst/rtp/rtp.h>
 
-#include "gst/gst-i18n-plugin.h"
-
 #include "gstrtspsink.h"
 
 GST_DEBUG_CATEGORY_STATIC (rtsp_sink_debug);
