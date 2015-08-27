@@ -209,7 +209,8 @@ enum
   PROP_TLS_DATABASE,
   PROP_TLS_INTERACTION,
   PROP_NTP_TIME_SOURCE,
-  PROP_USER_AGENT
+  PROP_USER_AGENT,
+  PROP_PROFILES
 };
 
 #define GST_TYPE_RTSP_NAT_METHOD (gst_rtsp_nat_method_get_type())
@@ -358,6 +359,11 @@ gst_rtsp_sink_class_init (GstRTSPSinkClass * klass)
           "Allowed lower transport protocols", GST_TYPE_RTSP_LOWER_TRANS,
           DEFAULT_PROTOCOLS, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 
+  g_object_class_install_property (gobject_class, PROP_PROFILES,
+      g_param_spec_flags ("profiles", "Profiles",
+          "Allowed RTSP profiles", GST_TYPE_RTSP_PROFILE,
+          DEFAULT_PROFILES, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+
   g_object_class_install_property (gobject_class, PROP_DEBUG,
       g_param_spec_boolean ("debug", "Debug",
           "Dump request and response messages to stdout",
@@ -442,7 +448,6 @@ gst_rtsp_sink_class_init (GstRTSPSinkClass * klass)
    * Sets the proxy URI user id for authentication. If the URI set via the
    * "proxy" property contains a user-id already, that will take precedence.
    *
-   * Since: 1.2
    */
   g_object_class_install_property (gobject_class, PROP_PROXY_ID,
       g_param_spec_string ("proxy-id", "proxy-id",
@@ -454,7 +459,6 @@ gst_rtsp_sink_class_init (GstRTSPSinkClass * klass)
    * Sets the proxy URI password for authentication. If the URI set via the
    * "proxy" property contains a password already, that will take precedence.
    *
-   * Since: 1.2
    */
   g_object_class_install_property (gobject_class, PROP_PROXY_PW,
       g_param_spec_string ("proxy-pw", "proxy-pw",
@@ -485,12 +489,12 @@ gst_rtsp_sink_class_init (GstRTSPSinkClass * klass)
   /**
    * GstRTSPSink:port-range:
    *
-   * Configure the client port numbers that can be used to recieve RTP and
+   * Configure the client port numbers that can be used to receive
    * RTCP.
    */
   g_object_class_install_property (gobject_class, PROP_PORT_RANGE,
       g_param_spec_string ("port-range", "Port range",
-          "Client port range that can be used to receive RTP and RTCP data, "
+          "Client port range that can be used to receive RTCP data, "
           "eg. 3000-3005 (NULL = no restrictions)", DEFAULT_PORT_RANGE,
           G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 
@@ -526,10 +530,12 @@ gst_rtsp_sink_class_init (GstRTSPSinkClass * klass)
           "The network interface on which to join the multicast group",
           DEFAULT_MULTICAST_IFACE, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 
+#if 0
   g_object_class_install_property (gobject_class, PROP_NTP_SYNC,
       g_param_spec_boolean ("ntp-sync", "Sync on NTP clock",
           "Synchronize received streams to the NTP clock", DEFAULT_NTP_SYNC,
           G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+#endif
 
   g_object_class_install_property (gobject_class, PROP_SDES,
       g_param_spec_boxed ("sdes", "SDES",
@@ -542,7 +548,6 @@ gst_rtsp_sink_class_init (GstRTSPSinkClass * klass)
    * TLS certificate validation flags used to validate server
    * certificate.
    *
-   * Since: 1.2.1
    */
   g_object_class_install_property (gobject_class, PROP_TLS_VALIDATION_FLAGS,
       g_param_spec_flags ("tls-validation-flags", "TLS validation flags",
@@ -556,7 +561,6 @@ gst_rtsp_sink_class_init (GstRTSPSinkClass * klass)
    * TLS database with anchor certificate authorities used to validate
    * the server certificate.
    *
-   * Since: 1.4
    */
   g_object_class_install_property (gobject_class, PROP_TLS_DATABASE,
       g_param_spec_object ("tls-database", "TLS database",
@@ -570,20 +574,18 @@ gst_rtsp_sink_class_init (GstRTSPSinkClass * klass)
    * database need to interact with the user. This will be used to prompt the
    * user for passwords where necessary.
    *
-   * Since: 1.6
    */
   g_object_class_install_property (gobject_class, PROP_TLS_INTERACTION,
       g_param_spec_object ("tls-interaction", "TLS interaction",
-          "A GTlsInteraction object to promt the user for password or certificate",
+          "A GTlsInteraction object to prompt the user for password or certificate",
           G_TYPE_TLS_INTERACTION, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 
   /**
    * GstRTSPSink::ntp-time-source:
    *
    * allows to select the time source that should be used
-   * for the NTP time in RTCP packets
+   * for the NTP time in outgoing packets
    *
-   * Since: 1.6
    */
   g_object_class_install_property (gobject_class, PROP_NTP_TIME_SOURCE,
       g_param_spec_enum ("ntp-time-source", "NTP Time Source",
@@ -596,7 +598,6 @@ gst_rtsp_sink_class_init (GstRTSPSinkClass * klass)
    *
    * The string to set in the User-Agent header.
    *
-   * Since: 1.6
    */
   g_object_class_install_property (gobject_class, PROP_USER_AGENT,
       g_param_spec_string ("user-agent", "User Agent",
@@ -617,7 +618,6 @@ gst_rtsp_sink_class_init (GstRTSPSinkClass * klass)
    * #GST_MESSAGE_REQUEST_STATE message on the bus or signal the main thread
    * in some other way.
    *
-   * Since: 1.2
    */
   gst_rtsp_sink_signals[SIGNAL_HANDLE_REQUEST] =
       g_signal_new ("handle-request", G_TYPE_FROM_CLASS (klass), 0,
@@ -629,10 +629,9 @@ gst_rtsp_sink_class_init (GstRTSPSinkClass * klass)
    * @rtsp_sink: a #GstRTSPSink
    * @manager: a #GstElement
    *
-   * Emited after a new manager (like rtpbin) was created and the default
+   * Emitted after a new manager (like rtpbin) was created and the default
    * properties were configured.
    *
-   * Since: 1.4
    */
   gst_rtsp_sink_signals[SIGNAL_NEW_MANAGER] =
       g_signal_new_class_handler ("new-manager", G_TYPE_FROM_CLASS (klass),
@@ -644,11 +643,10 @@ gst_rtsp_sink_class_init (GstRTSPSinkClass * klass)
    * @rtsp_sink: a #GstRTSPSink
    * @num: the stream number
    *
-   * Signal emited to get the crypto parameters relevant to the RTCP
+   * Signal emitted to get the crypto parameters relevant to the RTCP
    * stream. User should provide the key and the RTCP encryption ciphers
    * and authentication, and return them wrapped in a GstCaps.
    *
-   * Since: 1.4
    */
   gst_rtsp_sink_signals[SIGNAL_REQUEST_RTCP_KEY] =
       g_signal_new ("request-rtcp-key", G_TYPE_FROM_CLASS (klass),
@@ -1292,6 +1290,9 @@ gst_rtsp_sink_set_property (GObject * object, guint prop_id,
     case PROP_PROTOCOLS:
       rtsp_sink->protocols = g_value_get_flags (value);
       break;
+    case PROP_PROFILES:
+      rtsp_sink->profiles = g_value_get_flags (value);
+      break;
     case PROP_DEBUG:
       rtsp_sink->debug = g_value_get_boolean (value);
       break;
@@ -1424,6 +1425,9 @@ gst_rtsp_sink_get_property (GObject * object, guint prop_id, GValue * value,
       break;
     case PROP_PROTOCOLS:
       g_value_set_flags (value, rtsp_sink->protocols);
+      break;
+    case PROP_PROFILES:
+      g_value_set_flags (value, rtsp_sink->profiles);
       break;
     case PROP_DEBUG:
       g_value_set_boolean (value, rtsp_sink->debug);
@@ -1797,7 +1801,7 @@ gst_rtsp_sink_connection_flush (GstRTSPSink * sink, gboolean flush)
   GList *walk;
 
   GST_DEBUG_OBJECT (sink, "set flushing %d", flush);
-  GST_RTSP_STATE_LOCK (sink);
+  g_mutex_lock (&sink->preroll_lock);
   if (sink->conninfo.connection && sink->conninfo.flushing != flush) {
     GST_DEBUG_OBJECT (sink, "connection flush");
     gst_rtsp_connection_flush (sink->conninfo.connection, flush);
@@ -1811,7 +1815,7 @@ gst_rtsp_sink_connection_flush (GstRTSPSink * sink, gboolean flush)
       stream->conninfo.flushing = flush;
     }
   }
-  GST_RTSP_STATE_UNLOCK (sink);
+  g_mutex_unlock (&sink->preroll_lock);
 }
 
 static GstRTSPResult
@@ -3407,9 +3411,8 @@ gst_rtsp_sink_collect_streams (GstRTSPSink * sink)
   /* check if the base ends with / */
   has_slash = g_str_has_suffix (base, "/");
 
-  /* FIXME: Handle shutdown while waiting */
   g_mutex_lock (&sink->preroll_lock);
-  while (sink->contexts == NULL) {
+  while (sink->contexts == NULL && !sink->conninfo.flushing) {
     g_cond_wait (&sink->preroll_cond, &sink->preroll_lock);
   }
   g_mutex_unlock (&sink->preroll_lock);
@@ -3424,7 +3427,7 @@ gst_rtsp_sink_collect_streams (GstRTSPSink * sink)
       continue;
 
     g_mutex_lock (&sink->preroll_lock);
-    while (!context->prerolled) {
+    while (!context->prerolled && !sink->conninfo.flushing) {
       GST_DEBUG_OBJECT (sink, "Waiting for caps on stream %d", context->index);
       g_cond_wait (&sink->preroll_cond, &sink->preroll_lock);
     }
@@ -3471,114 +3474,83 @@ join_bin_failed:
 
 static GstRTSPResult
 gst_rtsp_sink_create_transports_string (GstRTSPSink * sink,
-    GstRTSPStream * stream, GSocketFamily family,
-    GstRTSPLowerTrans protocols, gchar ** transports)
+    GstRTSPStreamContext * context, GSocketFamily family,
+    GstRTSPLowerTrans protocols, GstRTSPProfile profiles, gchar ** transports)
 {
   GString *result;
-  GstRTSPProfile profile = gst_rtsp_stream_get_profiles (stream);
+  GstRTSPStream *stream = context->stream;
+  gboolean first = TRUE;
 
   /* the default RTSP transports */
   result = g_string_new ("RTP");
 
-  switch (profile) {
-    case GST_RTSP_PROFILE_AVP:
-      g_string_append (result, "/AVP");
-      break;
-    case GST_RTSP_PROFILE_SAVP:
-      g_string_append (result, "/SAVP");
-      break;
-    case GST_RTSP_PROFILE_AVPF:
-      g_string_append (result, "/AVPF");
-      break;
-    case GST_RTSP_PROFILE_SAVPF:
+  while (profiles != 0) {
+    if (!first)
+      g_string_append (result, ",RTP");
+
+    if (profiles & GST_RTSP_PROFILE_SAVPF) {
       g_string_append (result, "/SAVPF");
+      profiles &= ~GST_RTSP_PROFILE_SAVPF;
+    } else if (profiles & GST_RTSP_PROFILE_SAVP) {
+      g_string_append (result, "/SAVP");
+      profiles &= ~GST_RTSP_PROFILE_SAVP;
+    } else if (profiles & GST_RTSP_PROFILE_AVPF) {
+      g_string_append (result, "/AVPF");
+      profiles &= ~GST_RTSP_PROFILE_AVPF;
+    } else if (profiles & GST_RTSP_PROFILE_AVP) {
+      g_string_append (result, "/AVP");
+      profiles &= ~GST_RTSP_PROFILE_AVP;
+    } else {
+      GST_WARNING_OBJECT (sink, "Unimplemented profile(s) 0x%x", profiles);
       break;
-    default:
-      break;
-  }
-
-  if (protocols & GST_RTSP_LOWER_TRANS_UDP) {
-    GstRTSPRange ports;
-
-    GST_DEBUG_OBJECT (sink, "adding UDP unicast");
-    gst_rtsp_stream_get_server_port (stream, &ports, family);
-    g_string_append_printf (result, ";unicast;client_port=%d-%d", ports.min,
-        ports.max);
-  } else if (protocols & GST_RTSP_LOWER_TRANS_UDP_MCAST) {
-    GstRTSPAddress *addr =
-        gst_rtsp_stream_get_multicast_address (stream, family);
-    if (addr) {
-      GST_DEBUG_OBJECT (sink, "adding UDP multicast");
-      g_string_append (result, ";multicast");
-      g_string_append_printf (result, ";client_port=%d-%d",
-          addr->port, addr->port + addr->n_ports - 1);
-      gst_rtsp_address_free (addr);
     }
-  } else if (protocols & GST_RTSP_LOWER_TRANS_TCP) {
-    GST_DEBUG_OBJECT (sink, "adding TCP");
 
-    g_string_append (result, "/TCP;unicast;interleaved=%%i1-%%i2");
+    if (protocols & GST_RTSP_LOWER_TRANS_UDP) {
+      GstRTSPRange ports;
+
+      GST_DEBUG_OBJECT (sink, "adding UDP unicast");
+      gst_rtsp_stream_get_server_port (stream, &ports, family);
+
+      g_string_append_printf (result, "/UDP;unicast;client_port=%d-%d",
+          ports.min, ports.max);
+    } else if (protocols & GST_RTSP_LOWER_TRANS_UDP_MCAST) {
+      GstRTSPAddress *addr =
+          gst_rtsp_stream_get_multicast_address (stream, family);
+      if (addr) {
+        GST_DEBUG_OBJECT (sink, "adding UDP multicast");
+        g_string_append_printf (result, "/UDP;multicast;client_port=%d-%d",
+            addr->port, addr->port + addr->n_ports - 1);
+        gst_rtsp_address_free (addr);
+      }
+    } else if (protocols & GST_RTSP_LOWER_TRANS_TCP) {
+      GST_DEBUG_OBJECT (sink, "adding TCP");
+      g_string_append_printf (result, "/TCP;unicast;interleaved=%d-%d",
+          sink->free_channel, sink->free_channel + 1);
+    }
+
+    g_string_append (result, ";mode=RECORD");
+    /* FIXME: Support appending too:
+       if (sink->append)
+       g_string_append (result, ";append");
+     */
+
+    first = FALSE;
   }
 
-  g_string_append (result, ";mode=record");
+  if (first) {
+    /* No valid transport could be constructed */
+    GST_ERROR_OBJECT (sink, "No supported profiles configured");
+    goto fail;
+  }
 
   *transports = g_string_free (result, FALSE);
 
   GST_DEBUG_OBJECT (sink, "prepared transports %s", GST_STR_NULL (*transports));
 
   return GST_RTSP_OK;
-}
-
-static GstRTSPResult
-gst_rtsp_sink_prepare_transports (GstRTSPStreamContext * context,
-    gchar ** transports)
-{
-  GstRTSPSink *sink;
-  gint nr_udp, nr_int;
-  gchar *next, *p;
-  GString *str;
-
-  sink = context->parent;
-
-  /* find number of placeholders first */
-  if (strstr (*transports, "%%i2"))
-    nr_int = 2;
-  else if (strstr (*transports, "%%i1"))
-    nr_int = 1;
-  else
-    nr_int = 0;
-
-  if (strstr (*transports, "%%u2"))
-    nr_udp = 2;
-  else if (strstr (*transports, "%%u1"))
-    nr_udp = 1;
-  else
-    nr_udp = 0;
-
-  if (nr_udp == 0 && nr_int == 0)
-    goto done;
-
-  str = g_string_new ("");
-  p = *transports;
-  while ((next = strstr (p, "%%"))) {
-    g_string_append_len (str, p, next - p);
-    if (next[2] == 'i') {
-      if (next[3] == '1')
-        g_string_append_printf (str, "%d", sink->free_channel);
-      else if (next[3] == '2')
-        g_string_append_printf (str, "%d", sink->free_channel + 1);
-    }
-
-    p = next + 4;
-  }
-  /* append final part */
-  g_string_append (str, p);
-
-  g_free (*transports);
-  *transports = g_string_free (str, FALSE);
-
-done:
-  return GST_RTSP_OK;
+fail:
+  g_string_free (result, TRUE);
+  return GST_RTSP_ERROR;
 }
 
 /* masks to be kept in sync with the hardcoded protocol order of preference
@@ -3587,6 +3559,15 @@ static const guint protocol_masks[] = {
   GST_RTSP_LOWER_TRANS_UDP,
   GST_RTSP_LOWER_TRANS_UDP_MCAST,
   GST_RTSP_LOWER_TRANS_TCP,
+  0
+};
+
+/* Same for profile_masks */
+static const guint profile_masks[] = {
+  GST_RTSP_PROFILE_SAVPF,
+  GST_RTSP_PROFILE_SAVP,
+  GST_RTSP_PROFILE_AVPF,
+  GST_RTSP_PROFILE_AVP,
   0
 };
 
@@ -3628,12 +3609,16 @@ gst_rtsp_sink_setup_streams (GstRTSPSink * sink, gboolean async)
     GstRTSPStream *stream;
 
     GstRTSPConnection *conn;
+    GstRTSPProfile profiles;
+    GstRTSPProfile cur_profile;
     gchar *transports;
     gint retry = 0;
+    guint profile_mask = 0;
     guint mask = 0;
     GstCaps *caps;
 
     stream = context->stream;
+    profiles = gst_rtsp_stream_get_profiles (stream);
 
     caps = gst_rtsp_stream_get_caps (stream);
     if (caps == NULL) {
@@ -3666,6 +3651,13 @@ gst_rtsp_sink_setup_streams (GstRTSPSink * sink, gboolean async)
     g_object_unref (sa);
 
   next_protocol:
+    /* first selectable profile */
+    while (profile_masks[profile_mask]
+        && !(profiles & profile_masks[profile_mask]))
+      profile_mask++;
+    if (!profile_masks[profile_mask])
+      goto no_profiles;
+
     /* first selectable protocol */
     while (protocol_masks[mask] && !(protocols & protocol_masks[mask]))
       mask++;
@@ -3677,8 +3669,9 @@ gst_rtsp_sink_setup_streams (GstRTSPSink * sink, gboolean async)
         protocol_masks[mask]);
     /* create a string with first transport in line */
     transports = NULL;
-    res = gst_rtsp_sink_create_transports_string (sink, stream, family,
-        protocols & protocol_masks[mask], &transports);
+    cur_profile = profiles & profile_masks[profile_mask];
+    res = gst_rtsp_sink_create_transports_string (sink, context, family,
+        protocols & protocol_masks[mask], cur_profile, &transports);
     if (res < 0 || transports == NULL)
       goto setup_transport_failed;
 
@@ -3686,19 +3679,11 @@ gst_rtsp_sink_setup_streams (GstRTSPSink * sink, gboolean async)
       g_free (transports);
       GST_DEBUG_OBJECT (sink, "no transports found");
       mask++;
+      profile_mask = 0;
       goto next_protocol;
     }
 
-    GST_DEBUG_OBJECT (sink, "replace ports in %s", GST_STR_NULL (transports));
-
-    /* replace placeholders with real values */
-    res = gst_rtsp_sink_prepare_transports (context, &transports);
-    if (res < 0) {
-      g_free (transports);
-      goto setup_transport_failed;
-    }
-
-    GST_DEBUG_OBJECT (sink, "transport is now %s", GST_STR_NULL (transports));
+    GST_DEBUG_OBJECT (sink, "transport is %s", GST_STR_NULL (transports));
 
     /* create SETUP request */
     res =
@@ -3743,7 +3728,19 @@ gst_rtsp_sink_setup_streams (GstRTSPSink * sink, gboolean async)
       case GST_RTSP_STS_UNSUPPORTED_TRANSPORT:
         gst_rtsp_message_unset (&request);
         gst_rtsp_message_unset (&response);
+
+        /* Try another profile. If no more, move to the next protocol */
+        profile_mask++;
+        while (profile_masks[profile_mask]
+            && !(profiles & profile_masks[profile_mask]))
+          profile_mask++;
+        if (profile_masks[profile_mask])
+          goto retry;
+
         /* select next available protocol, give up on this stream if none */
+        /* Reset profiles to try: */
+        profile_mask = 0;
+
         mask++;
         while (protocol_masks[mask] && !(protocols & protocol_masks[mask]))
           mask++;
@@ -3862,13 +3859,23 @@ no_streams:
   }
 setup_transport_failed:
   {
+    GST_RTSP_STATE_UNLOCK (sink);
     GST_ELEMENT_ERROR (sink, RESOURCE, SETTINGS, (NULL),
         ("Could not setup transport."));
     res = GST_RTSP_ERROR;
     goto cleanup_error;
   }
+no_profiles:
+  {
+    GST_RTSP_STATE_UNLOCK (sink);
+    /* no transport possible, post an error and stop */
+    GST_ELEMENT_ERROR (sink, RESOURCE, READ, (NULL),
+        ("Could not connect to server, no profiles left"));
+    return GST_RTSP_ERROR;
+  }
 no_protocols:
   {
+    GST_RTSP_STATE_UNLOCK (sink);
     /* no transport possible, post an error and stop */
     GST_ELEMENT_ERROR (sink, RESOURCE, READ, (NULL),
         ("Could not connect to server, no protocols left"));
@@ -3876,6 +3883,7 @@ no_protocols:
   }
 no_transport:
   {
+    GST_RTSP_STATE_UNLOCK (sink);
     GST_ELEMENT_ERROR (sink, RESOURCE, SETTINGS, (NULL),
         ("Server did not select transport."));
     res = GST_RTSP_ERROR;
@@ -3885,6 +3893,7 @@ create_request_failed:
   {
     gchar *str = gst_rtsp_strresult (res);
 
+    GST_RTSP_STATE_UNLOCK (sink);
     GST_ELEMENT_ERROR (sink, LIBRARY, INIT, (NULL),
         ("Could not create request. (%s)", str));
     g_free (str);
@@ -3894,6 +3903,7 @@ send_error:
   {
     gchar *str = gst_rtsp_strresult (res);
 
+    GST_RTSP_STATE_UNLOCK (sink);
     if (res != GST_RTSP_EINTR) {
       GST_ELEMENT_ERROR (sink, RESOURCE, WRITE, (NULL),
           ("Could not send message. (%s)", str));
@@ -3907,6 +3917,7 @@ response_error:
   {
     const gchar *str = gst_rtsp_status_as_text (code);
 
+    GST_RTSP_STATE_UNLOCK (sink);
     GST_ELEMENT_ERROR (sink, RESOURCE, WRITE, (NULL),
         ("Error (%d): %s", code, GST_STR_NULL (str)));
     res = GST_RTSP_ERROR;
@@ -3976,6 +3987,9 @@ gst_rtsp_sink_record (GstRTSPSink * sink, gboolean async)
 
   /* session ID doesn't have to be super-unique in this case */
   sess_id = g_strdup_printf ("%u", g_random_int ());
+
+  if (sink->conninfo.connection == NULL)
+    return GST_RTSP_ERROR;
 
   conn_socket = gst_rtsp_connection_get_read_socket (sink->conninfo.connection);
 
