@@ -250,8 +250,6 @@ static void gst_rtsp_sink_set_tcp_timeout (GstRTSPSink * rtsp_sink,
 
 static GstStateChangeReturn gst_rtsp_sink_change_state (GstElement * element,
     GstStateChange transition);
-static gboolean gst_rtsp_sink_send_event (GstElement * element,
-    GstEvent * event);
 static void gst_rtsp_sink_handle_message (GstBin * bin, GstMessage * message);
 
 static gboolean gst_rtsp_sink_setup_auth (GstRTSPSink * sink,
@@ -652,7 +650,6 @@ gst_rtsp_sink_class_init (GstRTSPSinkClass * klass)
       g_signal_new ("request-rtcp-key", G_TYPE_FROM_CLASS (klass),
       G_SIGNAL_RUN_LAST, 0, NULL, NULL, NULL, GST_TYPE_CAPS, 1, G_TYPE_UINT);
 
-  gstelement_class->send_event = gst_rtsp_sink_send_event;
   gstelement_class->provide_clock = gst_rtsp_sink_provide_clock;
   gstelement_class->change_state = gst_rtsp_sink_change_state;
   gstelement_class->request_new_pad =
@@ -712,6 +709,8 @@ gst_rtsp_sink_init (GstRTSPSink * sink)
   /* protects our state changes from multiple invocations */
   g_rec_mutex_init (&sink->state_rec_lock);
 
+  g_mutex_init (&sink->send_lock);
+
   g_mutex_init (&sink->preroll_lock);
   g_cond_init (&sink->preroll_cond);
 
@@ -760,6 +759,8 @@ gst_rtsp_sink_finalize (GObject * object)
   /* free locks */
   g_rec_mutex_clear (&rtsp_sink->stream_rec_lock);
   g_rec_mutex_clear (&rtsp_sink->state_rec_lock);
+
+  g_mutex_clear (&rtsp_sink->send_lock);
 
   g_mutex_clear (&rtsp_sink->preroll_lock);
   g_cond_clear (&rtsp_sink->preroll_cond);
@@ -1546,28 +1547,6 @@ gst_rtsp_sink_get_property (GObject * object, guint prop_id, GValue * value,
   }
 }
 
-static gint
-find_stream_by_channel (GstRTSPStreamContext * stream, gint * channel)
-{
-  if (stream->channel[0] == *channel || stream->channel[1] == *channel)
-    return 0;
-
-  return -1;
-}
-
-static GstRTSPStreamContext *
-find_stream (GstRTSPSink * sink, gconstpointer data, gconstpointer func)
-{
-  GList *lstream;
-
-  /* find and get stream */
-  if ((lstream =
-          g_list_find_custom (sink->contexts, data, (GCompareFunc) func)))
-    return (GstRTSPStreamContext *) lstream->data;
-
-  return NULL;
-}
-
 static const gchar *
 get_aggregate_control (GstRTSPSink * sink)
 {
@@ -1940,69 +1919,6 @@ send_error:
         ("Could not send keep-alive. (%s)", str));
     g_free (str);
     return res;
-  }
-}
-
-static GstFlowReturn
-gst_rtsp_sink_handle_data (GstRTSPSink * sink, GstRTSPMessage * message)
-{
-  GstFlowReturn ret = GST_FLOW_OK;
-  gint channel;
-  GstRTSPStreamContext *stream;
-  GstPad *outpad = NULL;
-  guint8 *data;
-  guint size;
-  GstBuffer *buf;
-  gboolean is_rtcp;
-
-  channel = message->type_data.data.channel;
-
-  stream = find_stream (sink, &channel, (gpointer) find_stream_by_channel);
-  if (!stream)
-    goto unknown_stream;
-
-  GST_FIXME_OBJECT (sink, "Handle DATA message on channel %d", channel);
-
-  /* we have no clue what this is, just ignore then. */
-  if (outpad == NULL)
-    goto unknown_stream;
-
-  /* take the message body for further processing */
-  gst_rtsp_message_steal_body (message, &data, &size);
-
-  /* strip the trailing \0 */
-  size -= 1;
-
-  buf = gst_buffer_new ();
-  gst_buffer_append_memory (buf,
-      gst_memory_new_wrapped (0, data, size, 0, size, data, g_free));
-
-  /* don't need message anymore */
-  gst_rtsp_message_unset (message);
-
-  GST_DEBUG_OBJECT (sink, "pushing data of size %d on channel %d", size,
-      channel);
-
-  /* chain to the peer pad */
-  if (GST_PAD_IS_SINK (outpad))
-    ret = gst_pad_chain (outpad, buf);
-  else
-    ret = gst_pad_push (outpad, buf);
-
-  if (!is_rtcp) {
-#if 0
-    /* combine all stream flows for the data transport */
-    ret = gst_rtsp_sink_combine_flows (sink, stream, ret);
-#endif
-  }
-  return ret;
-
-  /* ERRORS */
-unknown_stream:
-  {
-    GST_DEBUG_OBJECT (sink, "unknown stream on channel %d, ignored", channel);
-    gst_rtsp_message_unset (message);
-    return GST_FLOW_OK;
   }
 }
 
@@ -2706,21 +2622,34 @@ again:
   if (sink->debug)
     gst_rtsp_message_dump (request);
 
+  g_mutex_lock (&sink->send_lock);
+
   res = gst_rtsp_sink_connection_send (sink, conn, request, sink->ptcp_timeout);
-  if (res < 0)
+  if (res < 0) {
+    g_mutex_unlock (&sink->send_lock);
     goto send_error;
+  }
 
   gst_rtsp_connection_reset_timeout (conn);
 
+  /* See if we should handle the response */
+  if (response == NULL) {
+    g_mutex_unlock (&sink->send_lock);
+    return GST_RTSP_OK;
+  }
 next:
   res =
       gst_rtsp_sink_connection_receive (sink, conn, response,
       sink->ptcp_timeout);
+
+  g_mutex_unlock (&sink->send_lock);
+
   if (res < 0)
     goto receive_error;
 
   if (sink->debug)
     gst_rtsp_message_dump (response);
+
 
   switch (response->type) {
     case GST_RTSP_MESSAGE_REQUEST:
@@ -2729,19 +2658,21 @@ next:
         goto server_eof;
       else if (res < 0)
         goto handle_request_failed;
+      g_mutex_lock (&sink->send_lock);
       goto next;
     case GST_RTSP_MESSAGE_RESPONSE:
       /* ok, a response is good */
       GST_DEBUG_OBJECT (sink, "received response message");
       break;
     case GST_RTSP_MESSAGE_DATA:
-      /* get next response */
-      GST_DEBUG_OBJECT (sink, "handle data response message");
-      gst_rtsp_sink_handle_data (sink, response);
+      /* we ignore data messages */
+      GST_DEBUG_OBJECT (sink, "ignoring data message");
+      g_mutex_lock (&sink->send_lock);
       goto next;
     default:
       GST_WARNING_OBJECT (sink, "ignoring unknown message type %d",
           response->type);
+      g_mutex_lock (&sink->send_lock);
       goto next;
   }
 
@@ -3457,6 +3388,8 @@ gst_rtsp_sink_collect_streams (GstRTSPSink * sink)
     }
     context->joined = TRUE;
 
+    gst_rtsp_stream_get_ssrc (context->stream, &context->send_ssrc);
+
     /* Let the stream object receive data */
     gst_pad_remove_probe (srcpad, context->payloader_block_id);
     gst_object_unref (srcpad);
@@ -3553,6 +3486,172 @@ fail:
   return GST_RTSP_ERROR;
 }
 
+static guint8
+enc_key_length_from_cipher_name (const gchar * cipher)
+{
+  if (g_strcmp0 (cipher, "aes-128-icm") == 0)
+    return AES_128_KEY_LEN;
+  else if (g_strcmp0 (cipher, "aes-256-icm") == 0)
+    return AES_256_KEY_LEN;
+  else {
+    GST_ERROR ("encryption algorithm '%s' not supported", cipher);
+    return 0;
+  }
+}
+
+static guint8
+auth_key_length_from_auth_name (const gchar * auth)
+{
+  if (g_strcmp0 (auth, "hmac-sha1-32") == 0)
+    return HMAC_32_KEY_LEN;
+  else if (g_strcmp0 (auth, "hmac-sha1-80") == 0)
+    return HMAC_80_KEY_LEN;
+  else {
+    GST_ERROR ("authentication algorithm '%s' not supported", auth);
+    return 0;
+  }
+}
+
+static GstCaps *
+signal_get_srtcp_params (GstRTSPSink * sink, GstRTSPStreamContext * context)
+{
+  GstCaps *caps = NULL;
+
+  g_signal_emit (sink, gst_rtsp_sink_signals[SIGNAL_REQUEST_RTCP_KEY], 0,
+      context->index, &caps);
+
+  if (caps != NULL)
+    GST_DEBUG_OBJECT (sink, "SRTP parameters received");
+
+  return caps;
+}
+
+static GstCaps *
+default_srtcp_params (void)
+{
+  guint i;
+  GstCaps *caps;
+  GstBuffer *buf;
+  guint8 *key_data;
+#define KEY_SIZE 30
+
+  /* create a random key */
+  key_data = g_malloc (KEY_SIZE);
+  for (i = 0; i < KEY_SIZE; i += 4)
+    GST_WRITE_UINT32_BE (key_data + i, g_random_int ());
+
+  buf = gst_buffer_new_wrapped (key_data, KEY_SIZE);
+
+  caps = gst_caps_new_simple ("application/x-srtp",
+      "srtp-key", GST_TYPE_BUFFER, buf,
+      "srtcp-cipher", G_TYPE_STRING, "aes-128-icm",
+      "srtcp-auth", G_TYPE_STRING, "hmac-sha1-80", NULL);
+
+  gst_buffer_unref (buf);
+
+  return caps;
+}
+
+static gchar *
+gst_rtsp_sink_stream_make_keymgmt (GstRTSPSink * sink,
+    GstRTSPStreamContext * context)
+{
+  GBytes *bytes;
+  gchar *result, *base64;
+  const guint8 *data;
+  gsize size;
+  GstMIKEYMessage *msg;
+  GstMIKEYPayload *payload, *pkd;
+  guint8 byte;
+  GstStructure *s;
+  GstMapInfo info;
+  GstBuffer *srtpkey;
+  const GValue *val;
+  const gchar *srtcpcipher, *srtcpauth;
+
+  context->srtcpparams = signal_get_srtcp_params (sink, context);
+  if (context->srtcpparams == NULL)
+    context->srtcpparams = default_srtcp_params ();
+
+  s = gst_caps_get_structure (context->srtcpparams, 0);
+
+  srtcpcipher = gst_structure_get_string (s, "srtcp-cipher");
+  srtcpauth = gst_structure_get_string (s, "srtcp-auth");
+  val = gst_structure_get_value (s, "srtp-key");
+
+  if (srtcpcipher == NULL || srtcpauth == NULL || val == NULL) {
+    GST_ERROR_OBJECT (sink, "could not find the right SRTP parameters in caps");
+    return NULL;
+  }
+
+  srtpkey = gst_value_get_buffer (val);
+
+  msg = gst_mikey_message_new ();
+  /* unencrypted MIKEY message, we send this over TLS so this is allowed */
+  gst_mikey_message_set_info (msg, GST_MIKEY_VERSION, GST_MIKEY_TYPE_PSK_INIT,
+      FALSE, GST_MIKEY_PRF_MIKEY_1, g_random_int (), GST_MIKEY_MAP_TYPE_SRTP);
+  /* add policy '0' for our SSRC */
+  gst_mikey_message_add_cs_srtp (msg, 0, context->send_ssrc, 0);
+  /* timestamp is now */
+  gst_mikey_message_add_t_now_ntp_utc (msg);
+  /* add some random data */
+  gst_mikey_message_add_rand_len (msg, 16);
+
+  /* the policy '0' is SRTP */
+  payload = gst_mikey_payload_new (GST_MIKEY_PT_SP);
+  gst_mikey_payload_sp_set (payload, 0, GST_MIKEY_SEC_PROTO_SRTP);
+
+  /* only AES-CM is supported */
+  byte = 1;
+  gst_mikey_payload_sp_add_param (payload, GST_MIKEY_SP_SRTP_ENC_ALG, 1, &byte);
+  /* encryption key length */
+  byte = enc_key_length_from_cipher_name (srtcpcipher);
+  gst_mikey_payload_sp_add_param (payload, GST_MIKEY_SP_SRTP_ENC_KEY_LEN, 1,
+      &byte);
+  /* only HMAC-SHA1 */
+  gst_mikey_payload_sp_add_param (payload, GST_MIKEY_SP_SRTP_AUTH_ALG, 1,
+      &byte);
+  /* authentication key length */
+  byte = auth_key_length_from_auth_name (srtcpauth);
+  gst_mikey_payload_sp_add_param (payload, GST_MIKEY_SP_SRTP_AUTH_KEY_LEN, 1,
+      &byte);
+  /* we enable encryption on RTP and RTCP */
+  gst_mikey_payload_sp_add_param (payload, GST_MIKEY_SP_SRTP_SRTP_ENC, 1,
+      &byte);
+  gst_mikey_payload_sp_add_param (payload, GST_MIKEY_SP_SRTP_SRTCP_ENC, 1,
+      &byte);
+  /* we enable authentication on RTP and RTCP */
+  gst_mikey_payload_sp_add_param (payload, GST_MIKEY_SP_SRTP_SRTP_AUTH, 1,
+      &byte);
+  gst_mikey_message_add_payload (msg, payload);
+
+  /* make unencrypted KEMAC */
+  payload = gst_mikey_payload_new (GST_MIKEY_PT_KEMAC);
+  gst_mikey_payload_kemac_set (payload, GST_MIKEY_ENC_NULL, GST_MIKEY_MAC_NULL);
+  /* add the key in KEMAC */
+  pkd = gst_mikey_payload_new (GST_MIKEY_PT_KEY_DATA);
+  gst_buffer_map (srtpkey, &info, GST_MAP_READ);
+  gst_mikey_payload_key_data_set_key (pkd, GST_MIKEY_KD_TEK, info.size,
+      info.data);
+  gst_buffer_unmap (srtpkey, &info);
+  gst_mikey_payload_kemac_add_sub (payload, pkd);
+  gst_mikey_message_add_payload (msg, payload);
+
+  /* now serialize this to bytes */
+  bytes = gst_mikey_message_to_bytes (msg, NULL, NULL);
+  gst_mikey_message_unref (msg);
+  /* and make it into base64 */
+  data = g_bytes_get_data (bytes, &size);
+  base64 = g_base64_encode (data, size);
+  g_bytes_unref (bytes);
+
+  result = g_strdup_printf ("prot=mikey;uri=\"%s\";data=\"%s\"",
+      context->conninfo.location, base64);
+  g_free (base64);
+
+  return result;
+}
+
 /* masks to be kept in sync with the hardcoded protocol order of preference
  * in code below */
 static const guint protocol_masks[] = {
@@ -3570,6 +3669,36 @@ static const guint profile_masks[] = {
   GST_RTSP_PROFILE_AVP,
   0
 };
+
+static gboolean
+do_send_data (GstBuffer * buffer, guint8 channel,
+    GstRTSPStreamContext * context)
+{
+  GstRTSPSink *sink = context->parent;
+  GstRTSPMessage message = { 0 };
+  GstRTSPResult res = GST_RTSP_OK;
+  GstMapInfo map_info;
+  guint8 *data;
+  guint usize;
+
+  gst_rtsp_message_init_data (&message, channel);
+
+  /* FIXME, need some sort of iovec RTSPMessage here */
+  if (!gst_buffer_map (buffer, &map_info, GST_MAP_READ))
+    return FALSE;
+
+  gst_rtsp_message_take_body (&message, map_info.data, map_info.size);
+
+  res = gst_rtsp_sink_try_send (sink, sink->conninfo.connection, &message,
+      NULL, NULL);
+
+  gst_rtsp_message_steal_body (&message, &data, &usize);
+  gst_buffer_unmap (buffer, &map_info);
+
+  gst_rtsp_message_unset (&message);
+
+  return res == GST_RTSP_OK;
+}
 
 static GstRTSPResult
 gst_rtsp_sink_setup_streams (GstRTSPSink * sink, gboolean async)
@@ -3698,13 +3827,11 @@ gst_rtsp_sink_setup_streams (GstRTSPSink * sink, gboolean async)
     gst_rtsp_message_take_header (&request, GST_RTSP_HDR_TRANSPORT, transports);
 
     /* set up keys */
-#if 0
-    if (stream->profile == GST_RTSP_PROFILE_SAVP ||
-        stream->profile == GST_RTSP_PROFILE_SAVPF) {
-      hval = gst_rtsp_sink_stream_make_keymgmt (sink, stream);
+    if (cur_profile == GST_RTSP_PROFILE_SAVP ||
+        cur_profile == GST_RTSP_PROFILE_SAVPF) {
+      hval = gst_rtsp_sink_stream_make_keymgmt (sink, context);
       gst_rtsp_message_take_header (&request, GST_RTSP_HDR_KEYMGMT, hval);
     }
-#endif
 
     /* if the user wants a non default RTP packet size we add the blocksize
      * parameter */
@@ -3815,25 +3942,18 @@ gst_rtsp_sink_setup_streams (GstRTSPSink * sink, gboolean async)
         else
           gst_rtsp_stream_transport_set_transport (context->stream_transport,
               transport);
+
+        if (transport->lower_transport == GST_RTSP_LOWER_TRANS_TCP) {
+          /* our callbacks to send data on this TCP connection */
+          gst_rtsp_stream_transport_set_callbacks (context->stream_transport,
+              (GstRTSPSendFunc) do_send_data,
+              (GstRTSPSendFunc) do_send_data, context, NULL);
+        }
+
         /* The stream_transport now owns the transport */
         transport = NULL;
 
         gst_rtsp_stream_transport_set_active (context->stream_transport, TRUE);
-#if 0                           /* Code to handle TCP interleaved: */
-        if (ct->lower_transport == GST_RTSP_LOWER_TRANS_TCP) {
-          /* our callbacks to send data on this TCP connection */
-          gst_rtsp_stream_transport_set_callbacks (trans,
-              (GstRTSPSendFunc) do_send_data,
-              (GstRTSPSendFunc) do_send_data, client, NULL);
-
-          g_hash_table_insert (priv->transports,
-              GINT_TO_POINTER (ct->interleaved.min), trans);
-          g_object_ref (trans);
-          g_hash_table_insert (priv->transports,
-              GINT_TO_POINTER (ct->interleaved.max), trans);
-          g_object_ref (trans);
-        }
-#endif
       }
     next:
       if (transport)
@@ -4577,15 +4697,6 @@ start_failed:
     return GST_STATE_CHANGE_FAILURE;
   }
 }
-
-static gboolean
-gst_rtsp_sink_send_event (GstElement * element, GstEvent * event)
-{
-  gboolean res;
-  res = GST_ELEMENT_CLASS (parent_class)->send_event (element, event);
-  return res;
-}
-
 
 /*** GSTURIHANDLER INTERFACE *************************************************/
 

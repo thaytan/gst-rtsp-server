@@ -103,6 +103,10 @@ struct _GstRTSPStreamContext {
   GstRTSPStream *stream;
   gboolean joined;
 
+  /* Secure profile key mgmt */
+  GstCaps      *srtcpparams;
+  guint32      send_ssrc;
+
   /* per stream connection */
   GstRTSPConnInfo  conninfo;
   /* For interleaved mode */
@@ -213,6 +217,8 @@ struct _GstRTSPSink {
   GstElement      *rtpbin;
 
   GList           *contexts;
+
+  GMutex          send_lock;
 
   GMutex          preroll_lock;
   GCond           preroll_cond;
