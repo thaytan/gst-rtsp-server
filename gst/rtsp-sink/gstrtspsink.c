@@ -65,8 +65,12 @@
  */
 
 /* FIXMEs
- * - Implement extension support for Real / WMS if they support RECORD
- * - Is there any way to detect UDP timeout and switch to TCP?
+ * - Implement extension support for Real / WMS if they support RECORD?
+ * - Add support for network clock synchronised streaming
+ * - Fix crypto key nego so SAVP/SAVPF profiles work.
+ * - Test (&fix?) HTTP tunnel support
+ * - Add an address pool object for GstRTSPStreams to use for multicast
+ * - Test multicast UDP transport
  */
 
 #ifdef HAVE_CONFIG_H
@@ -102,13 +106,6 @@ enum
   SIGNAL_NEW_MANAGER,
   SIGNAL_REQUEST_RTCP_KEY,
   LAST_SIGNAL
-};
-
-enum _GstRTSPSinkRtcpSyncMode
-{
-  RTCP_SYNC_ALWAYS,
-  RTCP_SYNC_INITIAL,
-  RTCP_SYNC_RTP
 };
 
 enum _GstRTSPSinkNtpTimeSource
