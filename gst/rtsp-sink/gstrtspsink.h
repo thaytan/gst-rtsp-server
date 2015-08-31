@@ -1,6 +1,7 @@
 /* GStreamer
  * Copyright (C) <1999> Erik Walthinsen <omega@cse.ogi.edu>
  *               <2006> Wim Taymans <wim@fluendo.com>
+ *               <2015> Jan Schmidt <jan at centricular dot com>
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Library General Public
@@ -158,10 +159,6 @@ struct _GstRTSPSink {
   GTimeVal          tcp_timeout;
   GTimeVal         *ptcp_timeout;
   guint             latency;
-  gboolean          drop_on_latency;
-  guint64           connection_speed;
-  GstRTSPNatMethod  nat_method;
-  gboolean          do_rtcp;
   gboolean          do_rtsp_keep_alive;
   gchar            *proxy_host;
   guint             proxy_port;
@@ -174,8 +171,6 @@ struct _GstRTSPSink {
   gchar            *user_pw;
   GstRTSPRange      client_port_range;
   gint              udp_buffer_size;
-  gboolean          short_header;
-  guint             probation;
   gboolean          udp_reconnect;
   gchar            *multi_iface;
   gboolean          ntp_sync;

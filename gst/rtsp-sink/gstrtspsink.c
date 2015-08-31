@@ -1,6 +1,7 @@
 /* GStreamer
  * Copyright (C) <2005,2006> Wim Taymans <wim at fluendo dot com>
  *               <2006> Lutz Mueller <lutz at topfrose dot de>
+ *               <2015> Jan Schmidt <jan at centricular dot com>
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Library General Public
@@ -153,16 +154,12 @@ gst_rtsp_sink_ntp_time_source_get_type (void)
 #define DEFAULT_UDP_BUFFER_SIZE  0x80000
 #define DEFAULT_TCP_TIMEOUT      20000000
 #define DEFAULT_LATENCY_MS       2000
-#define DEFAULT_CONNECTION_SPEED 0
-#define DEFAULT_NAT_METHOD       GST_RTSP_NAT_DUMMY
-#define DEFAULT_DO_RTCP          TRUE
 #define DEFAULT_DO_RTSP_KEEP_ALIVE       TRUE
 #define DEFAULT_PROXY            NULL
 #define DEFAULT_RTP_BLOCKSIZE    0
 #define DEFAULT_USER_ID          NULL
 #define DEFAULT_USER_PW          NULL
 #define DEFAULT_PORT_RANGE       NULL
-#define DEFAULT_PROBATION        2
 #define DEFAULT_UDP_RECONNECT    TRUE
 #define DEFAULT_MULTICAST_IFACE  NULL
 #define DEFAULT_NTP_SYNC         FALSE
@@ -184,10 +181,7 @@ enum
   PROP_TIMEOUT,
   PROP_TCP_TIMEOUT,
   PROP_LATENCY,
-  PROP_CONNECTION_SPEED,
-  PROP_NAT_METHOD,
   PROP_RTX_TIME,
-  PROP_DO_RTCP,
   PROP_DO_RTSP_KEEP_ALIVE,
   PROP_PROXY,
   PROP_PROXY_ID,
@@ -197,7 +191,6 @@ enum
   PROP_USER_PW,
   PROP_PORT_RANGE,
   PROP_UDP_BUFFER_SIZE,
-  PROP_PROBATION,
   PROP_UDP_RECONNECT,
   PROP_MULTICAST_IFACE,
   PROP_NTP_SYNC,
@@ -209,24 +202,6 @@ enum
   PROP_USER_AGENT,
   PROP_PROFILES
 };
-
-#define GST_TYPE_RTSP_NAT_METHOD (gst_rtsp_nat_method_get_type())
-static GType
-gst_rtsp_nat_method_get_type (void)
-{
-  static GType rtsp_nat_method_type = 0;
-  static const GEnumValue rtsp_nat_method[] = {
-    {GST_RTSP_NAT_NONE, "None", "none"},
-    {GST_RTSP_NAT_DUMMY, "Send Dummy packets", "dummy"},
-    {0, NULL, NULL},
-  };
-
-  if (!rtsp_nat_method_type) {
-    rtsp_nat_method_type =
-        g_enum_register_static ("GstRTSPSinkNatMethod", rtsp_nat_method);
-  }
-  return rtsp_nat_method_type;
-}
 
 static void gst_rtsp_sink_finalize (GObject * object);
 
@@ -387,33 +362,11 @@ gst_rtsp_sink_class_init (GstRTSPSinkClass * klass)
           "Amount of ms to buffer", 0, G_MAXUINT, DEFAULT_LATENCY_MS,
           G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 
-  g_object_class_install_property (gobject_class, PROP_CONNECTION_SPEED,
-      g_param_spec_uint64 ("connection-speed", "Connection Speed",
-          "Network connection speed in kbps (0 = unknown)",
-          0, G_MAXUINT64 / 1000, DEFAULT_CONNECTION_SPEED,
-          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
-
-  g_object_class_install_property (gobject_class, PROP_NAT_METHOD,
-      g_param_spec_enum ("nat-method", "NAT Method",
-          "Method to use for traversing firewalls and NAT",
-          GST_TYPE_RTSP_NAT_METHOD, DEFAULT_NAT_METHOD,
-          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
-
   g_object_class_install_property (gobject_class, PROP_RTX_TIME,
       g_param_spec_uint ("rtx-time", "Retransmission buffer in ms",
           "Amount of ms to buffer for retransmission. 0 disables retransmission",
           0, G_MAXUINT, DEFAULT_RTX_TIME_MS,
           G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
-  /**
-   * GstRTSPSink:do-rtcp:
-   *
-   * Enable RTCP support. Some old server don't like RTCP and then this property
-   * needs to be set to FALSE.
-   */
-  g_object_class_install_property (gobject_class, PROP_DO_RTCP,
-      g_param_spec_boolean ("do-rtcp", "Do RTCP",
-          "Send RTCP packets, disable for old incompatible server.",
-          DEFAULT_DO_RTCP, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 
   /**
    * GstRTSPSink:do-rtsp-keep-alive:
@@ -502,17 +455,6 @@ gst_rtsp_sink_class_init (GstRTSPSinkClass * klass)
       g_param_spec_int ("udp-buffer-size", "UDP Buffer Size",
           "Size of the kernel UDP receive buffer in bytes, 0=default",
           0, G_MAXINT, DEFAULT_UDP_BUFFER_SIZE,
-          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
-
-  /**
-   * GstRTSPSink:short-header:
-   *
-   * Only send the basic RTSP headers for broken encoders.
-   */
-  g_object_class_install_property (gobject_class, PROP_PROBATION,
-      g_param_spec_uint ("probation", "Number of probations",
-          "Consecutive packet sequence numbers to accept the source",
-          0, G_MAXUINT, DEFAULT_PROBATION,
           G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 
   g_object_class_install_property (gobject_class, PROP_UDP_RECONNECT,
@@ -674,10 +616,7 @@ gst_rtsp_sink_init (GstRTSPSink * sink)
   sink->udp_timeout = DEFAULT_TIMEOUT;
   gst_rtsp_sink_set_tcp_timeout (sink, DEFAULT_TCP_TIMEOUT);
   sink->latency = DEFAULT_LATENCY_MS;
-  sink->connection_speed = DEFAULT_CONNECTION_SPEED;
-  sink->nat_method = DEFAULT_NAT_METHOD;
   sink->rtx_time = DEFAULT_RTX_TIME_MS;
-  sink->do_rtcp = DEFAULT_DO_RTCP;
   sink->do_rtsp_keep_alive = DEFAULT_DO_RTSP_KEEP_ALIVE;
   gst_rtsp_sink_set_proxy (sink, DEFAULT_PROXY);
   sink->rtp_blocksize = DEFAULT_RTP_BLOCKSIZE;
@@ -686,7 +625,6 @@ gst_rtsp_sink_init (GstRTSPSink * sink)
   sink->client_port_range.min = 0;
   sink->client_port_range.max = 0;
   sink->udp_buffer_size = DEFAULT_UDP_BUFFER_SIZE;
-  sink->probation = DEFAULT_PROBATION;
   sink->udp_reconnect = DEFAULT_UDP_RECONNECT;
   sink->multi_iface = g_strdup (DEFAULT_MULTICAST_IFACE);
   sink->ntp_sync = DEFAULT_NTP_SYNC;
@@ -963,6 +901,9 @@ gst_rtsp_sink_create_stream (GstRTSPSink * sink, GstRTSPStreamContext * context,
   gst_rtsp_stream_set_protocols (stream, sink->protocols);
   gst_rtsp_stream_set_profiles (stream, sink->profiles);
   gst_rtsp_stream_set_retransmission_pt (stream, aux_pt);
+  gst_rtsp_stream_set_buffer_size (stream, sink->udp_buffer_size);
+  if (sink->rtp_blocksize > 0)
+    gst_rtsp_stream_set_mtu (stream, sink->rtp_blocksize);
 
 #if 0
   if (priv->pool)
@@ -1306,17 +1247,8 @@ gst_rtsp_sink_set_property (GObject * object, guint prop_id,
     case PROP_LATENCY:
       rtsp_sink->latency = g_value_get_uint (value);
       break;
-    case PROP_CONNECTION_SPEED:
-      rtsp_sink->connection_speed = g_value_get_uint64 (value);
-      break;
-    case PROP_NAT_METHOD:
-      rtsp_sink->nat_method = g_value_get_enum (value);
-      break;
     case PROP_RTX_TIME:
       rtsp_sink->rtx_time = g_value_get_uint (value);
-      break;
-    case PROP_DO_RTCP:
-      rtsp_sink->do_rtcp = g_value_get_boolean (value);
       break;
     case PROP_DO_RTSP_KEEP_ALIVE:
       rtsp_sink->do_rtsp_keep_alive = g_value_get_boolean (value);
@@ -1364,9 +1296,6 @@ gst_rtsp_sink_set_property (GObject * object, guint prop_id,
     }
     case PROP_UDP_BUFFER_SIZE:
       rtsp_sink->udp_buffer_size = g_value_get_int (value);
-      break;
-    case PROP_PROBATION:
-      rtsp_sink->probation = g_value_get_uint (value);
       break;
     case PROP_UDP_RECONNECT:
       rtsp_sink->udp_reconnect = g_value_get_boolean (value);
@@ -1448,17 +1377,8 @@ gst_rtsp_sink_get_property (GObject * object, guint prop_id, GValue * value,
     case PROP_LATENCY:
       g_value_set_uint (value, rtsp_sink->latency);
       break;
-    case PROP_CONNECTION_SPEED:
-      g_value_set_uint64 (value, rtsp_sink->connection_speed);
-      break;
-    case PROP_NAT_METHOD:
-      g_value_set_enum (value, rtsp_sink->nat_method);
-      break;
     case PROP_RTX_TIME:
       g_value_set_uint (value, rtsp_sink->rtx_time);
-      break;
-    case PROP_DO_RTCP:
-      g_value_set_boolean (value, rtsp_sink->do_rtcp);
       break;
     case PROP_DO_RTSP_KEEP_ALIVE:
       g_value_set_boolean (value, rtsp_sink->do_rtsp_keep_alive);
@@ -1507,9 +1427,6 @@ gst_rtsp_sink_get_property (GObject * object, guint prop_id, GValue * value,
     }
     case PROP_UDP_BUFFER_SIZE:
       g_value_set_int (value, rtsp_sink->udp_buffer_size);
-      break;
-    case PROP_PROBATION:
-      g_value_set_uint (value, rtsp_sink->probation);
       break;
     case PROP_UDP_RECONNECT:
       g_value_set_boolean (value, rtsp_sink->udp_reconnect);
