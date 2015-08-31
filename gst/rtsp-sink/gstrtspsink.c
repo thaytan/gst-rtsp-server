@@ -66,6 +66,7 @@
  */
 
 /* FIXMEs
+ * - Handle EOS properly and shutdown
  * - Implement extension support for Real / WMS if they support RECORD?
  * - Add support for network clock synchronised streaming
  * - Fix crypto key nego so SAVP/SAVPF profiles work.
@@ -1837,7 +1838,7 @@ send_error:
 }
 
 static GstFlowReturn
-gst_rtsp_sink_loop_udp (GstRTSPSink * sink)
+gst_rtsp_sink_loop_rx (GstRTSPSink * sink)
 {
   GstRTSPResult res;
   GstRTSPMessage message = { 0 };
@@ -2206,13 +2207,7 @@ gst_rtsp_sink_loop (GstRTSPSink * sink)
   if (!sink->conninfo.connection || !sink->conninfo.connected)
     goto no_connection;
 
-#if 0
-  if (sink->interleaved)
-    ret = gst_rtsp_sink_loop_interleaved (sink);
-  else
-#endif
-    ret = gst_rtsp_sink_loop_udp (sink);
-
+  ret = gst_rtsp_sink_loop_rx (sink);
   if (ret != GST_FLOW_OK)
     goto pause;
 
