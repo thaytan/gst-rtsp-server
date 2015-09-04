@@ -4322,11 +4322,7 @@ gst_rtsp_sink_handle_message (GstBin * bin, GstMessage * message)
       break;
     }
     case GST_MESSAGE_ASYNC_START:{
-      GstObject *sender;
-      sender = GST_MESSAGE_SRC (message);
-      GST_DEBUG_OBJECT (rtsp_sink, "Ignoring ASYNC_START from %s",
-          GST_ELEMENT_NAME (sender));
-      gst_message_unref (message);
+      GST_BIN_CLASS (parent_class)->handle_message (bin, message);
       break;
     }
     case GST_MESSAGE_ASYNC_DONE:
@@ -4345,16 +4341,14 @@ gst_rtsp_sink_handle_message (GstBin * bin, GstMessage * message)
       }
       g_mutex_unlock (&rtsp_sink->preroll_lock);
 
+      GST_BIN_CLASS (parent_class)->handle_message (bin, message);
+
       if (need_async_done) {
         GST_DEBUG_OBJECT (rtsp_sink, "Posting ASYNC-DONE");
         gst_element_post_message (GST_ELEMENT_CAST (rtsp_sink),
             gst_message_new_async_done (GST_OBJECT_CAST (rtsp_sink),
                 GST_CLOCK_TIME_NONE));
-      } else {
-        GST_DEBUG_OBJECT (rtsp_sink, "Dropping ASYNC_DONE from %s",
-            GST_ELEMENT_NAME (sender));
       }
-      gst_message_unref (message);
       break;
     }
     case GST_MESSAGE_ERROR:
@@ -4439,6 +4433,7 @@ gst_rtsp_sink_start (GstRTSPSink * sink)
 {
   GST_DEBUG_OBJECT (sink, "starting");
 
+  sink->in_async = TRUE;
   gst_element_set_locked_state (GST_ELEMENT (sink->internal_bin), TRUE);
 
   gst_rtsp_sink_set_state (sink, GST_STATE_READY);
@@ -4526,11 +4521,12 @@ gst_rtsp_sink_change_state (GstElement * element, GstStateChange transition)
 
       gst_rtsp_sink_set_state (rtsp_sink, GST_STATE_PAUSED);
 
-      ret = GST_STATE_CHANGE_ASYNC;
       g_mutex_lock (&rtsp_sink->preroll_lock);
-      gst_element_post_message (GST_ELEMENT_CAST (rtsp_sink),
-          gst_message_new_async_start (GST_OBJECT_CAST (rtsp_sink)));
-      rtsp_sink->in_async = TRUE;
+      if (rtsp_sink->in_async) {
+        GST_DEBUG_OBJECT (rtsp_sink, "Posting ASYNC-START");
+        gst_element_post_message (GST_ELEMENT_CAST (rtsp_sink),
+            gst_message_new_async_start (GST_OBJECT_CAST (rtsp_sink)));
+      }
       g_mutex_unlock (&rtsp_sink->preroll_lock);
 
       gst_rtsp_sink_loop_send_cmd (rtsp_sink, CMD_OPEN, 0);
@@ -4561,8 +4557,11 @@ gst_rtsp_sink_change_state (GstElement * element, GstStateChange transition)
       ret = GST_STATE_CHANGE_SUCCESS;
       break;
     case GST_STATE_CHANGE_READY_TO_PAUSED:
-      /* FIXME: Return ASYNC and preroll input streams */
-      ret = GST_STATE_CHANGE_SUCCESS;
+      /* Return ASYNC and preroll input streams */
+      g_mutex_lock (&rtsp_sink->preroll_lock);
+      if (rtsp_sink->in_async)
+        ret = GST_STATE_CHANGE_ASYNC;
+      g_mutex_unlock (&rtsp_sink->preroll_lock);
       break;
     case GST_STATE_CHANGE_PAUSED_TO_PLAYING:
       gst_rtsp_sink_loop_send_cmd (rtsp_sink, CMD_RECORD, 0);
