@@ -95,6 +95,8 @@ struct _GstRTSPStreamContext {
   GstRTSPSink *parent;
 
   guint index;
+  /* Index of the SDPMedia in the stored SDP */
+  guint sdp_index;
 
   GstElement *payloader;
   guint payloader_block_id;
@@ -106,7 +108,6 @@ struct _GstRTSPStreamContext {
 
   /* Secure profile key mgmt */
   GstCaps      *srtcpparams;
-  guint32      send_ssrc;
 
   /* per stream connection */
   GstRTSPConnInfo  conninfo;
@@ -148,7 +149,7 @@ struct _GstRTSPSink {
   /* mutex for protecting state changes */
   GRecMutex        state_rec_lock;
 
-  GstSDPMessage   *sdp;
+  GstSDPMessage    *uri_sdp;
   gboolean         from_sdp;
 
   /* properties */
@@ -212,6 +213,7 @@ struct _GstRTSPSink {
   GstElement      *rtpbin;
 
   GList           *contexts;
+  GstSDPMessage   cursdp;
 
   GMutex          send_lock;
 

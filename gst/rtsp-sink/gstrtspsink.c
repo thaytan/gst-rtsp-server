@@ -66,6 +66,7 @@
  */
 
 /* FIXMEs
+ * - Fix RTX by doing SETUP for RTX streams
  * - Handle EOS properly and shutdown
  * - Implement extension support for Real / WMS if they support RECORD?
  * - Add support for network clock synchronised streaming
@@ -163,7 +164,6 @@ gst_rtsp_sink_ntp_time_source_get_type (void)
 #define DEFAULT_PORT_RANGE       NULL
 #define DEFAULT_UDP_RECONNECT    TRUE
 #define DEFAULT_MULTICAST_IFACE  NULL
-#define DEFAULT_NTP_SYNC         FALSE
 #define DEFAULT_TLS_VALIDATION_FLAGS     G_TLS_CERTIFICATE_VALIDATE_ALL
 #define DEFAULT_TLS_DATABASE     NULL
 #define DEFAULT_TLS_INTERACTION     NULL
@@ -194,7 +194,6 @@ enum
   PROP_UDP_BUFFER_SIZE,
   PROP_UDP_RECONNECT,
   PROP_MULTICAST_IFACE,
-  PROP_NTP_SYNC,
   PROP_SDES,
   PROP_TLS_VALIDATION_FLAGS,
   PROP_TLS_DATABASE,
@@ -468,13 +467,6 @@ gst_rtsp_sink_class_init (GstRTSPSinkClass * klass)
           "The network interface on which to join the multicast group",
           DEFAULT_MULTICAST_IFACE, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 
-#if 0
-  g_object_class_install_property (gobject_class, PROP_NTP_SYNC,
-      g_param_spec_boolean ("ntp-sync", "Sync on NTP clock",
-          "Synchronize received streams to the NTP clock", DEFAULT_NTP_SYNC,
-          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
-#endif
-
   g_object_class_install_property (gobject_class, PROP_SDES,
       g_param_spec_boxed ("sdes", "SDES",
           "The SDES items of this session",
@@ -628,7 +620,6 @@ gst_rtsp_sink_init (GstRTSPSink * sink)
   sink->udp_buffer_size = DEFAULT_UDP_BUFFER_SIZE;
   sink->udp_reconnect = DEFAULT_UDP_RECONNECT;
   sink->multi_iface = g_strdup (DEFAULT_MULTICAST_IFACE);
-  sink->ntp_sync = DEFAULT_NTP_SYNC;
   sink->sdes = NULL;
   sink->tls_validation_flags = DEFAULT_TLS_VALIDATION_FLAGS;
   sink->tls_database = DEFAULT_TLS_DATABASE;
@@ -658,6 +649,8 @@ gst_rtsp_sink_init (GstRTSPSink * sink)
 
   sink->next_dyn_pt = 96;
 
+  gst_sdp_message_init (&sink->cursdp);
+
   GST_OBJECT_FLAG_SET (sink, GST_ELEMENT_FLAG_SINK);
 }
 
@@ -668,6 +661,8 @@ gst_rtsp_sink_finalize (GObject * object)
 
   rtsp_sink = GST_RTSP_SINK (object);
 
+  gst_sdp_message_uninit (&rtsp_sink->cursdp);
+
   g_free (rtsp_sink->conninfo.location);
   gst_rtsp_url_free (rtsp_sink->conninfo.url);
   g_free (rtsp_sink->conninfo.url_str);
@@ -676,9 +671,9 @@ gst_rtsp_sink_finalize (GObject * object)
   g_free (rtsp_sink->multi_iface);
   g_free (rtsp_sink->user_agent);
 
-  if (rtsp_sink->sdp) {
-    gst_sdp_message_free (rtsp_sink->sdp);
-    rtsp_sink->sdp = NULL;
+  if (rtsp_sink->uri_sdp) {
+    gst_sdp_message_free (rtsp_sink->uri_sdp);
+    rtsp_sink->uri_sdp = NULL;
   }
   if (rtsp_sink->provided_clock)
     gst_object_unref (rtsp_sink->provided_clock);
@@ -1309,9 +1304,6 @@ gst_rtsp_sink_set_property (GObject * object, guint prop_id,
       else
         rtsp_sink->multi_iface = g_value_dup_string (value);
       break;
-    case PROP_NTP_SYNC:
-      rtsp_sink->ntp_sync = g_value_get_boolean (value);
-      break;
     case PROP_SDES:
       rtsp_sink->sdes = g_value_dup_boxed (value);
       break;
@@ -1435,9 +1427,6 @@ gst_rtsp_sink_get_property (GObject * object, guint prop_id, GValue * value,
     case PROP_MULTICAST_IFACE:
       g_value_set_string (value, rtsp_sink->multi_iface);
       break;
-    case PROP_NTP_SYNC:
-      g_value_set_boolean (value, rtsp_sink->ntp_sync);
-      break;
     case PROP_SDES:
       g_value_set_boxed (value, rtsp_sink->sdes);
       break;
@@ -1506,6 +1495,9 @@ gst_rtsp_sink_cleanup (GstRTSPSink * sink)
       gst_object_unref (context->stream);
       context->stream = NULL;
     }
+
+    if (context->srtcpparams)
+      gst_caps_unref (context->srtcpparams);
   }
 
   if (sink->rtpbin) {
@@ -1525,9 +1517,9 @@ gst_rtsp_sink_cleanup (GstRTSPSink * sink)
   sink->range = NULL;
 
   /* don't clear the SDP when it was used in the url */
-  if (sink->sdp && !sink->from_sdp) {
-    gst_sdp_message_free (sink->sdp);
-    sink->sdp = NULL;
+  if (sink->uri_sdp && !sink->from_sdp) {
+    gst_sdp_message_free (sink->uri_sdp);
+    sink->uri_sdp = NULL;
   }
 
   if (sink->provided_clock) {
@@ -3171,6 +3163,8 @@ gst_rtsp_sink_configure_manager (GstRTSPSink * sink)
   rtpbin = sink->rtpbin;
 
   if (rtpbin == NULL) {
+    GObjectClass *klass;
+
     rtpbin = gst_element_factory_make ("rtpbin", NULL);
     if (rtpbin == NULL)
       goto no_rtpbin;
@@ -3179,7 +3173,19 @@ gst_rtsp_sink_configure_manager (GstRTSPSink * sink)
 
     sink->rtpbin = rtpbin;
 
-    /* FIXME: Need to configure a lot more settings on rtpbin here */
+    /* Any more settings we should configure on rtpbin here? */
+    g_object_set (sink->rtpbin, "latency", sink->latency, NULL);
+
+    klass = G_OBJECT_GET_CLASS (G_OBJECT (rtpbin));
+
+    if (g_object_class_find_property (klass, "ntp-time-source")) {
+      g_object_set (sink->rtpbin, "ntp-time-source", sink->ntp_time_source,
+          NULL);
+    }
+
+    if (sink->sdes && g_object_class_find_property (klass, "sdes")) {
+      g_object_set (sink->rtpbin, "sdes", sink->sdes, NULL);
+    }
 
     g_signal_emit (sink, gst_rtsp_sink_signals[SIGNAL_NEW_MANAGER], 0,
         sink->rtpbin);
@@ -3188,8 +3194,6 @@ gst_rtsp_sink_configure_manager (GstRTSPSink * sink)
   ret = gst_element_set_state (rtpbin, GST_STATE_PAUSED);
   if (ret == GST_STATE_CHANGE_FAILURE)
     goto start_manager_failure;
-
-  g_object_set (rtpbin, "latency", sink->latency, NULL);
 
   return TRUE;
 
@@ -3297,12 +3301,10 @@ gst_rtsp_sink_collect_streams (GstRTSPSink * sink)
     }
     context->joined = TRUE;
 
-    gst_rtsp_stream_get_ssrc (context->stream, &context->send_ssrc);
-
     /* Let the stream object receive data */
     gst_pad_remove_probe (srcpad, context->payloader_block_id);
-    gst_object_unref (srcpad);
 
+    gst_object_unref (srcpad);
   }
 
   return TRUE;
@@ -3435,32 +3437,6 @@ signal_get_srtcp_params (GstRTSPSink * sink, GstRTSPStreamContext * context)
   return caps;
 }
 
-static GstCaps *
-default_srtcp_params (void)
-{
-  guint i;
-  GstCaps *caps;
-  GstBuffer *buf;
-  guint8 *key_data;
-#define KEY_SIZE 30
-
-  /* create a random key */
-  key_data = g_malloc (KEY_SIZE);
-  for (i = 0; i < KEY_SIZE; i += 4)
-    GST_WRITE_UINT32_BE (key_data + i, g_random_int ());
-
-  buf = gst_buffer_new_wrapped (key_data, KEY_SIZE);
-
-  caps = gst_caps_new_simple ("application/x-srtp",
-      "srtp-key", GST_TYPE_BUFFER, buf,
-      "srtcp-cipher", G_TYPE_STRING, "aes-128-icm",
-      "srtcp-auth", G_TYPE_STRING, "hmac-sha1-80", NULL);
-
-  gst_buffer_unref (buf);
-
-  return caps;
-}
-
 static gchar *
 gst_rtsp_sink_stream_make_keymgmt (GstRTSPSink * sink,
     GstRTSPStreamContext * context)
@@ -3477,10 +3453,11 @@ gst_rtsp_sink_stream_make_keymgmt (GstRTSPSink * sink,
   GstBuffer *srtpkey;
   const GValue *val;
   const gchar *srtcpcipher, *srtcpauth;
+  guint send_ssrc;
 
   context->srtcpparams = signal_get_srtcp_params (sink, context);
   if (context->srtcpparams == NULL)
-    context->srtcpparams = default_srtcp_params ();
+    context->srtcpparams = gst_rtsp_stream_get_caps (context->stream);
 
   s = gst_caps_get_structure (context->srtcpparams, 0);
 
@@ -3495,12 +3472,15 @@ gst_rtsp_sink_stream_make_keymgmt (GstRTSPSink * sink,
 
   srtpkey = gst_value_get_buffer (val);
 
+  gst_rtsp_stream_get_ssrc (context->stream, &send_ssrc);
+  GST_LOG_OBJECT (sink, "Stream %p ssrc %x", context->stream, send_ssrc);
+
   msg = gst_mikey_message_new ();
   /* unencrypted MIKEY message, we send this over TLS so this is allowed */
   gst_mikey_message_set_info (msg, GST_MIKEY_VERSION, GST_MIKEY_TYPE_PSK_INIT,
       FALSE, GST_MIKEY_PRF_MIKEY_1, g_random_int (), GST_MIKEY_MAP_TYPE_SRTP);
   /* add policy '0' for our SSRC */
-  gst_mikey_message_add_cs_srtp (msg, 0, context->send_ssrc, 0);
+  gst_mikey_message_add_cs_srtp (msg, 0, send_ssrc, 0);
   /* timestamp is now */
   gst_mikey_message_add_t_now_ntp_utc (msg);
   /* add some random data */
@@ -3654,6 +3634,7 @@ gst_rtsp_sink_setup_streams (GstRTSPSink * sink, gboolean async)
     guint profile_mask = 0;
     guint mask = 0;
     GstCaps *caps;
+    const GstSDPMedia *media;
 
     stream = context->stream;
     profiles = gst_rtsp_stream_get_profiles (stream);
@@ -3661,6 +3642,11 @@ gst_rtsp_sink_setup_streams (GstRTSPSink * sink, gboolean async)
     caps = gst_rtsp_stream_get_caps (stream);
     if (caps == NULL) {
       GST_DEBUG_OBJECT (sink, "skipping stream %p, no caps", stream);
+      continue;
+    }
+    media = gst_sdp_message_get_media (&sink->cursdp, context->sdp_index);
+    if (media == NULL) {
+      GST_DEBUG_OBJECT (sink, "skipping stream %p, no SDP info", stream);
       continue;
     }
 
@@ -3991,6 +3977,7 @@ gst_rtsp_sink_record (GstRTSPSink * sink, gboolean async)
   GstRTSPMessage response = { 0 };
   GstRTSPResult res = GST_RTSP_OK;
   GstSDPMessage *sdp;
+  guint sdp_index = 0;
   GstSDPInfo info = { 0, };
 
   const gchar *proto;
@@ -4009,7 +3996,8 @@ gst_rtsp_sink_record (GstRTSPSink * sink, gboolean async)
   g_mutex_unlock (&sink->preroll_lock);
 
   /* Send announce, then setup for all streams */
-  gst_sdp_message_new (&sdp);
+  gst_sdp_message_init (&sink->cursdp);
+  sdp = &sink->cursdp;
 
   /* some standard things first */
   gst_sdp_message_set_version (sdp, "0");
@@ -4049,6 +4037,7 @@ gst_rtsp_sink_record (GstRTSPSink * sink, gboolean async)
     GstRTSPStreamContext *context = (GstRTSPStreamContext *) walk->data;
 
     gst_rtsp_sdp_from_stream (sdp, &info, context->stream);
+    context->sdp_index = sdp_index++;
   }
 
   g_free (sess_id);
@@ -4068,7 +4057,6 @@ gst_rtsp_sink_record (GstRTSPSink * sink, gboolean async)
   /* add SDP to the request body */
   str = gst_sdp_message_as_text (sdp);
   gst_rtsp_message_take_body (&request, (guint8 *) str, strlen (str));
-  gst_sdp_message_free (sdp);
 
   /* send ANNOUNCE */
   GST_DEBUG_OBJECT (sink, "send announce...");
@@ -4680,9 +4668,9 @@ gst_rtsp_sink_uri_set_uri (GstURIHandler * handler, const gchar * uri,
   else
     sink->conninfo.url_str = NULL;
 
-  if (sink->sdp)
-    gst_sdp_message_free (sink->sdp);
-  sink->sdp = sdp;
+  if (sink->uri_sdp)
+    gst_sdp_message_free (sink->uri_sdp);
+  sink->uri_sdp = sdp;
   sink->from_sdp = sdp != NULL;
 
   GST_DEBUG_OBJECT (sink, "set uri: %s", GST_STR_NULL (uri));
