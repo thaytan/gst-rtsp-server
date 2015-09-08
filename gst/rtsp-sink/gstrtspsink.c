@@ -1701,6 +1701,7 @@ gst_rtsp_sink_connection_flush (GstRTSPSink * sink, gboolean flush)
       stream->conninfo.flushing = flush;
     }
   }
+  g_cond_broadcast (&sink->preroll_cond);
   g_mutex_unlock (&sink->preroll_lock);
 }
 
@@ -3275,7 +3276,14 @@ gst_rtsp_sink_collect_streams (GstRTSPSink * sink)
       GST_DEBUG_OBJECT (sink, "Waiting for caps on stream %d", context->index);
       g_cond_wait (&sink->preroll_cond, &sink->preroll_lock);
     }
+    if (sink->conninfo.flushing) {
+      g_mutex_unlock (&sink->preroll_lock);
+      break;
+    }
     g_mutex_unlock (&sink->preroll_lock);
+
+    if (context->payloader == NULL)
+      continue;
 
     srcpad = gst_element_get_static_pad (context->payloader, "src");
 
