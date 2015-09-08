@@ -2998,22 +2998,22 @@ gst_rtsp_sink_open (GstRTSPSink * sink, gboolean async)
   if ((ret = gst_rtsp_sink_connect_to_server (sink, async)) < 0)
     goto open_failed;
 
-  /* Collect all our input streams and create
-   * stream objects */
-  gst_rtsp_sink_collect_streams (sink);
-
-done:
   if (async)
     gst_rtsp_sink_loop_end_cmd (sink, CMD_OPEN, ret);
 
-  return ret;
+  /* Collect all our input streams and create
+   * stream objects before actually returning */
+  gst_rtsp_sink_collect_streams (sink);
+
 
   /* ERRORS */
 open_failed:
   {
     GST_WARNING_OBJECT (sink, "Failed to connect to server");
     sink->open_error = TRUE;
-    goto done;
+    if (async)
+      gst_rtsp_sink_loop_end_cmd (sink, CMD_OPEN, ret);
+    return ret;
   }
 }
 
