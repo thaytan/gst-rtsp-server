@@ -1330,7 +1330,8 @@ gst_rtsp_stream_is_client_side (GstRTSPStream * stream)
   GstRTSPStreamPrivate *priv;
   gboolean ret;
 
-  g_return_if_fail (GST_IS_RTSP_STREAM (stream));
+  g_return_val_if_fail (GST_IS_RTSP_STREAM (stream), FALSE);
+
   priv = stream->priv;
   g_mutex_lock (&priv->lock);
   ret = priv->client_side;
