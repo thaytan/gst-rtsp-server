@@ -3063,11 +3063,17 @@ gst_rtsp_sink_close (GstRTSPSink * sink, gboolean async, gboolean only_close)
     const gchar *setup_url;
     GstRTSPConnInfo *info;
 
+    GST_DEBUG_OBJECT (sink, "Looking at stream %p for teardown",
+        context->stream);
+
     /* try aggregate control first but do non-aggregate control otherwise */
     if (control)
       setup_url = control;
-    else if ((setup_url = context->conninfo.location) == NULL)
+    else if ((setup_url = context->conninfo.location) == NULL) {
+      GST_DEBUG_OBJECT (sink, "Skipping TEARDOWN stream %p - no setup URL",
+          context->stream);
       continue;
+    }
 
     if (sink->conninfo.connection) {
       info = &sink->conninfo;
@@ -3080,6 +3086,8 @@ gst_rtsp_sink_close (GstRTSPSink * sink, gboolean async, gboolean only_close)
       goto next;
 
     /* do TEARDOWN */
+    GST_DEBUG_OBJECT (sink, "Sending teardown for stream %p at URL %s",
+        context->stream, setup_url);
     res =
         gst_rtsp_sink_init_request (sink, &request, GST_RTSP_TEARDOWN,
         setup_url);
@@ -4130,6 +4138,7 @@ gst_rtsp_sink_record (GstRTSPSink * sink, gboolean async)
 #endif
 
   gst_rtsp_sink_set_state (sink, GST_STATE_PLAYING);
+  sink->state = GST_RTSP_STATE_PLAYING;
 
   /* clean up any messages */
   gst_rtsp_message_unset (&request);
@@ -4478,7 +4487,7 @@ gst_rtsp_sink_stop (GstRTSPSink * sink)
   GST_DEBUG_OBJECT (sink, "stopping");
 
   /* also cancels pending task */
-  gst_rtsp_sink_loop_send_cmd (sink, CMD_WAIT, CMD_ALL);
+  gst_rtsp_sink_loop_send_cmd (sink, CMD_WAIT, CMD_ALL & ~CMD_CLOSE);
 
   GST_OBJECT_LOCK (sink);
   if ((task = sink->task)) {
