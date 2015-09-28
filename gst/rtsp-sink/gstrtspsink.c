@@ -3005,6 +3005,7 @@ gst_rtsp_sink_open (GstRTSPSink * sink, gboolean async)
    * stream objects before actually returning */
   gst_rtsp_sink_collect_streams (sink);
 
+  return ret;
 
   /* ERRORS */
 open_failed:
