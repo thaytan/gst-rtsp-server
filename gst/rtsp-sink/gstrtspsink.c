@@ -3324,6 +3324,14 @@ gst_rtsp_sink_collect_streams (GstRTSPSink * sink)
     gst_object_unref (srcpad);
   }
 
+  /* Now wait for the preroll of the rtp bin */
+  g_mutex_lock (&sink->preroll_lock);
+  while (!sink->prerolled && !sink->conninfo.flushing) {
+    GST_LOG_OBJECT (sink, "Waiting for preroll before continuing");
+    g_cond_wait (&sink->preroll_cond, &sink->preroll_lock);
+  }
+  g_mutex_unlock (&sink->preroll_lock);
+
   return TRUE;
 
 join_bin_failed:
@@ -4382,6 +4390,22 @@ gst_rtsp_sink_handle_message (GstBin * bin, GstMessage * message)
       /* fatal but not our message, forward */
       GST_BIN_CLASS (parent_class)->handle_message (bin, message);
       break;
+    }
+    case GST_MESSAGE_STATE_CHANGED:
+    {
+      if (GST_MESSAGE_SRC (message) == (GstObject *) rtsp_sink->internal_bin) {
+        GstState newstate, pending;
+        gst_message_parse_state_changed (message, NULL, &newstate, &pending);
+        g_mutex_lock (&rtsp_sink->preroll_lock);
+        rtsp_sink->prerolled = (newstate >= GST_STATE_PAUSED)
+            && pending == GST_STATE_VOID_PENDING;
+        g_cond_broadcast (&rtsp_sink->preroll_cond);
+        g_mutex_unlock (&rtsp_sink->preroll_lock);
+        GST_DEBUG_OBJECT (bin,
+            "Internal bin changed state to %s (pending %s). Prerolled now %d",
+            gst_element_state_get_name (newstate),
+            gst_element_state_get_name (pending), rtsp_sink->prerolled);
+      }
     }
     default:
     {

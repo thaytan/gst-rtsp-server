@@ -204,6 +204,10 @@ struct _GstRTSPSink {
   /* Everything goes in an internal
    * locked-state bin */
   GstBin          *internal_bin;
+  /* Set to true when internal bin state
+   * >= PAUSED */
+  gboolean        prerolled;
+
   /* TRUE if we posted async-start */
   gboolean         in_async;
 
