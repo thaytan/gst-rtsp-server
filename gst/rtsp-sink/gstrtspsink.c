@@ -3690,6 +3690,7 @@ gst_rtsp_sink_setup_streams (GstRTSPSink * sink, gboolean async)
       GST_DEBUG_OBJECT (sink, "skipping stream %p, no caps", stream);
       continue;
     }
+    gst_caps_unref (caps);
     media = gst_sdp_message_get_media (&sink->cursdp, context->sdp_index);
     if (media == NULL) {
       GST_DEBUG_OBJECT (sink, "skipping stream %p, no SDP info", stream);
