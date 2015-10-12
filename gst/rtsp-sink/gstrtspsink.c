@@ -1117,8 +1117,29 @@ gst_rtsp_sink_release_pad (GstElement * element, GstPad * pad)
 
   /* FIXME: Shut down and clean up streaming on this pad,
    * do teardown if needed */
-  GST_FIXME ("Clean up payloader and stream for released pad %" GST_PTR_FORMAT,
+  GST_LOG_OBJECT (sink,
+      "Cleaning up payloader and stream for released pad %" GST_PTR_FORMAT,
       pad);
+
+  if (context->stream_transport) {
+    gst_rtsp_stream_transport_set_active (context->stream_transport, FALSE);
+    gst_object_unref (context->stream_transport);
+    context->stream_transport = NULL;
+  }
+  if (context->stream) {
+    if (context->joined) {
+      gst_rtsp_stream_leave_bin (context->stream,
+          GST_BIN (sink->internal_bin), sink->rtpbin);
+      context->joined = FALSE;
+    }
+    gst_object_unref (context->stream);
+    context->stream = NULL;
+  }
+  if (context->srtcpparams)
+    gst_caps_unref (context->srtcpparams);
+
+  g_free (context->conninfo.location);
+  context->conninfo.location = NULL;
 
   g_free (context);
 
