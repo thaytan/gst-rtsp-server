@@ -1057,6 +1057,14 @@ gst_rtsp_sink_request_new_pad (GstElement * element,
   guint idx = (guint) - 1;
   gchar *tmpname;
 
+  g_mutex_lock (&sink->preroll_lock);
+  if (sink->streams_collected) {
+    GST_WARNING_OBJECT (element, "Can't add streams to a running session");
+    g_mutex_unlock (&sink->preroll_lock);
+    return NULL;
+  }
+  g_mutex_unlock (&sink->preroll_lock);
+
   GST_OBJECT_LOCK (sink);
   if (name) {
     if (!sscanf (name, "sink_%u", &idx)) {
@@ -1092,6 +1100,7 @@ gst_rtsp_sink_request_new_pad (GstElement * element,
   gst_pad_set_element_private (pad, context);
 
   /* The rest of the context is configured on a caps set */
+  gst_pad_set_active (pad, TRUE);
   gst_element_add_pad (element, pad);
 
   (void) gst_rtsp_sink_get_factories ();
