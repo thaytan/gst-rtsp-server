@@ -1519,6 +1519,8 @@ gst_rtsp_sink_cleanup (GstRTSPSink * sink)
 
     if (context->srtcpparams)
       gst_caps_unref (context->srtcpparams);
+    g_free (context->conninfo.location);
+    context->conninfo.location = NULL;
   }
 
   if (sink->rtpbin) {
@@ -3323,6 +3325,7 @@ gst_rtsp_sink_collect_streams (GstRTSPSink * sink)
         gst_rtsp_sink_create_stream (sink, context, context->payloader, srcpad);
 
     /* concatenate the two strings, insert / when not present */
+    g_free (context->conninfo.location);
     context->conninfo.location =
         g_strdup_printf ("%s%sstream=%d", base, has_slash ? "" : "/",
         context->index);
@@ -3351,6 +3354,8 @@ gst_rtsp_sink_collect_streams (GstRTSPSink * sink)
     GST_LOG_OBJECT (sink, "Waiting for preroll before continuing");
     g_cond_wait (&sink->preroll_cond, &sink->preroll_lock);
   }
+  GST_LOG_OBJECT (sink, "Marking streams as collected");
+  sink->streams_collected = TRUE;
   g_mutex_unlock (&sink->preroll_lock);
 
   return TRUE;
@@ -4106,7 +4111,7 @@ gst_rtsp_sink_record (GstRTSPSink * sink, gboolean async)
   gst_rtsp_message_take_body (&request, (guint8 *) str, strlen (str));
 
   /* send ANNOUNCE */
-  GST_DEBUG_OBJECT (sink, "send announce...");
+  GST_DEBUG_OBJECT (sink, "sending announce...");
 
   if (async)
     GST_ELEMENT_PROGRESS (sink, CONTINUE, "record",
@@ -4363,13 +4368,21 @@ gst_rtsp_sink_handle_message (GstBin * bin, GstMessage * message)
         return;
       } else if (gst_structure_has_name (s, "GstRTSPStreamBlocking")) {
         /* An RTSPStream has prerolled */
-        GstRTSPSink *sink = GST_RTSP_SINK (bin);
-        g_cond_broadcast (&sink->preroll_cond);
+        g_cond_broadcast (&rtsp_sink->preroll_cond);
       }
       GST_BIN_CLASS (parent_class)->handle_message (bin, message);
       break;
     }
     case GST_MESSAGE_ASYNC_START:{
+      GstObject *sender;
+
+      sender = GST_MESSAGE_SRC (message);
+
+      GST_LOG_OBJECT (rtsp_sink,
+          "Have async-start from %" GST_PTR_FORMAT, sender);
+      if (sender == GST_OBJECT (rtsp_sink->internal_bin)) {
+        GST_LOG_OBJECT (rtsp_sink, "child bin is now ASYNC");
+      }
       GST_BIN_CLASS (parent_class)->handle_message (bin, message);
       break;
     }
@@ -4379,11 +4392,15 @@ gst_rtsp_sink_handle_message (GstBin * bin, GstMessage * message)
       gboolean need_async_done;
 
       sender = GST_MESSAGE_SRC (message);
+      GST_LOG_OBJECT (rtsp_sink, "Have async-done from %" GST_PTR_FORMAT,
+          sender);
 
       g_mutex_lock (&rtsp_sink->preroll_lock);
-      need_async_done = rtsp_sink->in_async &&
-          sender == GST_OBJECT_CAST (rtsp_sink->internal_bin);
-      if (need_async_done) {
+      if (sender == GST_OBJECT_CAST (rtsp_sink->internal_bin)) {
+        GST_LOG_OBJECT (rtsp_sink, "child bin is no longer ASYNC");
+      }
+      need_async_done = rtsp_sink->in_async;
+      if (rtsp_sink->in_async) {
         rtsp_sink->in_async = FALSE;
         g_cond_broadcast (&rtsp_sink->preroll_cond);
       }
@@ -4497,6 +4514,7 @@ gst_rtsp_sink_start (GstRTSPSink * sink)
 {
   GST_DEBUG_OBJECT (sink, "starting");
 
+  sink->streams_collected = FALSE;
   sink->in_async = TRUE;
   gst_element_set_locked_state (GST_ELEMENT (sink->internal_bin), TRUE);
 
@@ -4593,14 +4611,13 @@ gst_rtsp_sink_change_state (GstElement * element, GstStateChange transition)
       }
       g_mutex_unlock (&rtsp_sink->preroll_lock);
 
-      gst_rtsp_sink_loop_send_cmd (rtsp_sink, CMD_OPEN, 0);
       break;
     case GST_STATE_CHANGE_PAUSED_TO_PLAYING:
       /* fall-through */
     case GST_STATE_CHANGE_PLAYING_TO_PAUSED:
       /* unblock the tcp tasks and make the loop waiting */
       if (gst_rtsp_sink_loop_send_cmd (rtsp_sink, CMD_WAIT, CMD_LOOP)) {
-        /* make sure it is waiting before we send PAUSE or PLAY below */
+        /* make sure it is waiting before we send PLAY below */
         GST_RTSP_STREAM_LOCK (rtsp_sink);
         GST_RTSP_STREAM_UNLOCK (rtsp_sink);
       }
@@ -4626,11 +4643,21 @@ gst_rtsp_sink_change_state (GstElement * element, GstStateChange transition)
       if (rtsp_sink->in_async)
         ret = GST_STATE_CHANGE_ASYNC;
       g_mutex_unlock (&rtsp_sink->preroll_lock);
+      gst_rtsp_sink_loop_send_cmd (rtsp_sink, CMD_OPEN, 0);
       break;
-    case GST_STATE_CHANGE_PAUSED_TO_PLAYING:
-      gst_rtsp_sink_loop_send_cmd (rtsp_sink, CMD_RECORD, 0);
+    case GST_STATE_CHANGE_PAUSED_TO_PLAYING:{
+      gboolean start_record;
+
+      g_mutex_lock (&rtsp_sink->preroll_lock);
+      start_record = rtsp_sink->streams_collected;
+      g_mutex_unlock (&rtsp_sink->preroll_lock);
+      if (start_record) {
+        GST_DEBUG_OBJECT (rtsp_sink, "Switching to playing -sending RECORD");
+        gst_rtsp_sink_loop_send_cmd (rtsp_sink, CMD_RECORD, 0);
+      }
       ret = GST_STATE_CHANGE_SUCCESS;
       break;
+    }
     case GST_STATE_CHANGE_PLAYING_TO_PAUSED:
       /* send pause request and keep the idle task around */
       gst_rtsp_sink_loop_send_cmd (rtsp_sink, CMD_PAUSE, CMD_LOOP);

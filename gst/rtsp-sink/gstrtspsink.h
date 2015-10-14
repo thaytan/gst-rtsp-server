@@ -211,6 +211,9 @@ struct _GstRTSPSink {
   /* TRUE if we posted async-start */
   gboolean         in_async;
 
+  /* TRUE when stream info has been collected */
+  gboolean         streams_collected;
+
   guint            next_pad_id;
   gint             next_dyn_pt;
 
