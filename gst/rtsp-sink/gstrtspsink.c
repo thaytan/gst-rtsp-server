@@ -107,6 +107,7 @@ enum
 {
   SIGNAL_HANDLE_REQUEST,
   SIGNAL_NEW_MANAGER,
+  SIGNAL_NEW_PAYLOADER,
   SIGNAL_REQUEST_RTCP_KEY,
   LAST_SIGNAL
 };
@@ -569,6 +570,20 @@ gst_rtsp_sink_class_init (GstRTSPSinkClass * klass)
       g_cclosure_marshal_generic, G_TYPE_NONE, 1, GST_TYPE_ELEMENT);
 
   /**
+   * GstRTSPSink::new-payloader:
+   * @rtsp_sink: a #GstRTSPSink
+   * @payloader: a #GstElement
+   *
+   * Emitted after a new RTP payloader was created and the default
+   * properties were configured.
+   *
+   */
+  gst_rtsp_sink_signals[SIGNAL_NEW_PAYLOADER] =
+      g_signal_new_class_handler ("new-payloader", G_TYPE_FROM_CLASS (klass),
+      G_SIGNAL_RUN_FIRST | G_SIGNAL_RUN_CLEANUP, 0, NULL, NULL,
+      g_cclosure_marshal_generic, G_TYPE_NONE, 1, GST_TYPE_ELEMENT);
+
+  /**
    * GstRTSPSink::request-rtcp-key:
    * @rtsp_sink: a #GstRTSPSink
    * @num: the stream number
@@ -966,6 +981,9 @@ gst_rtsp_sink_setup_payloader (GstRTSPSink * sink, GstPad * pad, GstCaps * caps)
   ghostsink = gst_ghost_pad_new (NULL, sinkpad);
   gst_pad_set_active (ghostsink, TRUE);
   gst_element_add_pad (GST_ELEMENT (sink->internal_bin), ghostsink);
+
+  g_signal_emit (sink, gst_rtsp_sink_signals[SIGNAL_NEW_PAYLOADER], 0,
+      payloader);
 
   GST_RTSP_STATE_LOCK (sink);
   context->payloader_block_id =
