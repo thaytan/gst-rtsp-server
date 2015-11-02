@@ -313,7 +313,7 @@ gst_rtsp_sink_class_init (GstRTSPSinkClass * klass)
   gstelement_class = (GstElementClass *) klass;
   gstbin_class = (GstBinClass *) klass;
 
-  GST_DEBUG_CATEGORY_INIT (rtsp_sink_debug, "rtsp_sink", 0, "RTSP src");
+  GST_DEBUG_CATEGORY_INIT (rtsp_sink_debug, "rtspsink", 0, "RTSP sink element");
 
   gobject_class->set_property = gst_rtsp_sink_set_property;
   gobject_class->get_property = gst_rtsp_sink_get_property;
