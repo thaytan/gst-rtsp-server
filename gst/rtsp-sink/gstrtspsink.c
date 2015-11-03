@@ -4074,6 +4074,12 @@ gst_rtsp_sink_record (GstRTSPSink * sink, gboolean async)
   }
   g_mutex_unlock (&sink->preroll_lock);
 
+  if (sink->state == GST_RTSP_STATE_PLAYING) {
+    /* Already recording, don't send another request */
+    GST_LOG_OBJECT (sink, "Already in RECORD. Skipping duplicate request.");
+    goto done;
+  }
+
   /* Send announce, then setup for all streams */
   gst_sdp_message_init (&sink->cursdp);
   sdp = &sink->cursdp;
@@ -4207,6 +4213,7 @@ gst_rtsp_sink_record (GstRTSPSink * sink, gboolean async)
   gst_rtsp_message_unset (&request);
   gst_rtsp_message_unset (&response);
 
+done:
   return res;
 
 create_request_failed:
@@ -4673,15 +4680,8 @@ gst_rtsp_sink_change_state (GstElement * element, GstStateChange transition)
       gst_rtsp_sink_loop_send_cmd (rtsp_sink, CMD_OPEN, 0);
       break;
     case GST_STATE_CHANGE_PAUSED_TO_PLAYING:{
-      gboolean start_record;
-
-      g_mutex_lock (&rtsp_sink->preroll_lock);
-      start_record = rtsp_sink->streams_collected;
-      g_mutex_unlock (&rtsp_sink->preroll_lock);
-      if (start_record) {
-        GST_DEBUG_OBJECT (rtsp_sink, "Switching to playing -sending RECORD");
-        gst_rtsp_sink_loop_send_cmd (rtsp_sink, CMD_RECORD, 0);
-      }
+      GST_DEBUG_OBJECT (rtsp_sink, "Switching to playing -sending RECORD");
+      gst_rtsp_sink_loop_send_cmd (rtsp_sink, CMD_RECORD, 0);
       ret = GST_STATE_CHANGE_SUCCESS;
       break;
     }
